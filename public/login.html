@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tank Control — Sign in</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+  <style>
+    body { display: grid; place-items: center; min-height: 100vh; }
+    .login { width: 320px; }
+    .login .brand-mark { width: 48px; height: 48px; font-size: 24px; margin: 0 auto 16px; }
+    .login h2 { text-align: center; margin: 0 0 4px; }
+    .login p { text-align: center; color: var(--muted); margin: 0 0 22px; font-size: 13px; }
+    .login input { width: 100%; padding: 12px; margin-bottom: 12px; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 9px; outline: none; color: var(--text); }
+    .login input:focus { border-color: var(--amber); }
+    .login .btn { width: 100%; }
+    .err { color: var(--red); font-size: 13px; text-align: center; height: 18px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="panel login">
+    <div class="brand-mark">▦</div>
+    <h2>Tank Control</h2>
+    <p>Enter the access password</p>
+    <input id="pw" type="password" placeholder="Password" autofocus />
+    <button class="btn" id="go">Sign in</button>
+    <div class="err" id="err"></div>
+  </div>
+  <script>
+    const submit = async () => {
+      const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pw').value }) });
+      if (r.ok) location.href = '/';
+      else document.getElementById('err').textContent = 'Wrong password';
+    };
+    document.getElementById('go').onclick = submit;
+    document.getElementById('pw').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  </script>
+</body>
+</html>

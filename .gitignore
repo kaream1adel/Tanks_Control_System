@@ -1,0 +1,22 @@
+# ─── NEVER commit data or secrets ───────────────────────────────
+# The real database, part files, backups and the auto-generated password.
+# Because these are ignored, "git pull" only updates code and can NEVER
+# touch or delete your production data.
+/data/
+/backups/
+
+# Per-machine settings (passwords, backup drives, tunnel on/off).
+config.bat
+.env
+
+# ─── Dependencies & machine-specific binaries (re-created locally) ──
+/node_modules/
+/node/
+cloudflared.exe
+cloudflared
+
+# ─── Junk ───────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
