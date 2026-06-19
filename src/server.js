@@ -7,7 +7,7 @@ import { exec } from 'child_process';
 import os from 'os';
 import { initDb, all, get, run, persist, tx, dataVersion } from './db.js';
 import { ensureSeeded } from './seed.js';
-import { parseSpreadsheet } from './import.js';
+import { parseAny } from './import.js';
 import { backupNow } from './backup.js';
 import { startTunnel, tunnelInfo } from './tunnel.js';
 import ExcelJS from 'exceljs';
@@ -546,14 +546,14 @@ app.get('/api/tank-types/:id/export.xlsx', async (req, res) => {
   res.end();
 });
 
-// import a spreadsheet into a type (mode=append default, or replace)
-app.post('/api/tank-types/:id/import', upload.single('file'), (req, res) => {
+// import a parts list (xlsx/csv/docx/pdf) into a type (mode=append default, or replace)
+app.post('/api/tank-types/:id/import', upload.single('file'), async (req, res) => {
   const tt = get('SELECT * FROM tank_types WHERE id=?', [req.params.id]);
   if (!tt) return res.status(404).json({ error: 'Type not found' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   let parsed;
-  try { parsed = parseSpreadsheet(req.file.buffer); } catch (e) { return res.status(400).json({ error: 'Could not read file: ' + e.message }); }
-  if (!parsed.parts.length) return res.status(400).json({ error: 'No rows found. Need at least an item code or description column.' });
+  try { parsed = await parseAny(req.file.buffer, req.file.originalname); } catch (e) { return res.status(400).json({ error: 'Could not read file: ' + e.message }); }
+  if (!parsed.parts.length) return res.status(400).json({ error: 'No parts table found in this file. Need a table with at least an item code or description column.' });
   if (req.query.mode === 'replace') run('DELETE FROM template_parts WHERE tank_type_id=?', [tt.id]);
   const base = req.query.mode === 'replace' ? 0 : (get('SELECT MAX(no) m FROM template_parts WHERE tank_type_id=?', [tt.id])?.m || 0);
   parsed.parts.forEach((p, i) => run('INSERT INTO template_parts(id,tank_type_id,item_code,no,qty,description,default_phase) VALUES (?,?,?,?,?,?,?)',
@@ -562,13 +562,14 @@ app.post('/api/tank-types/:id/import', upload.single('file'), (req, res) => {
   res.json({ imported: parsed.parts.length, headerMap: parsed.headerMap, detectedColumns: parsed.headers, type: tankTypeSummary(get('SELECT * FROM tank_types WHERE id=?', [tt.id])) });
 });
 
-// one-step: create a new type from a spreadsheet
-app.post('/api/tank-types/new-from-file', upload.single('file'), (req, res) => {
+// one-step: create a new type from a parts list (xlsx/csv/docx/pdf)
+app.post('/api/tank-types/new-from-file', upload.single('file'), async (req, res) => {
   const name = (req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Type name is required' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   let parsed;
-  try { parsed = parseSpreadsheet(req.file.buffer); } catch (e) { return res.status(400).json({ error: 'Could not read file: ' + e.message }); }
+  try { parsed = await parseAny(req.file.buffer, req.file.originalname); } catch (e) { return res.status(400).json({ error: 'Could not read file: ' + e.message }); }
+  if (!parsed.parts.length) return res.status(400).json({ error: 'No parts table found in this file. Need a table with at least an item code or description column.' });
   const id = uid();
   run('INSERT INTO tank_types(id,name,description,created_at) VALUES (?,?,?,?)', [id, name, req.body?.description || '', now()]);
   parsed.parts.forEach((p, i) => run('INSERT INTO template_parts(id,tank_type_id,item_code,no,qty,description,default_phase) VALUES (?,?,?,?,?,?,?)',

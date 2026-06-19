@@ -242,7 +242,7 @@ function partRow(p, cols) {
   const fc = p.fileCount || 0;
   const cell = {
     no: `<td class="num"><input class="cell-edit cell-num" type="number" min="0" value="${p.no ?? ''}" data-id="${p.id}" data-field="no"/></td>`,
-    partName: `<td><input class="cell-edit partname" type="text" value="${esc(p.description || '')}" placeholder="Part name" data-id="${p.id}" data-field="description"/><input class="cell-edit partcode" type="text" value="${esc(p.itemCode || '')}" placeholder="Item code" data-id="${p.id}" data-field="itemCode"/></td>`,
+    partName: `<td><input class="cell-edit partname" dir="auto" type="text" value="${esc(p.description || '')}" placeholder="Part name" data-id="${p.id}" data-field="description"/><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" placeholder="Item code" data-id="${p.id}" data-field="itemCode"/></td>`,
     tank: `<td class="muted">${esc(tank?.name || '—')}</td>`,
     phase: `<td>${selectHTML('parts', 'phase', p.phase, p.id, 'part', true)}</td>`,
     status: `<td>${selectHTML('parts', 'status', p.status, p.id, 'part')}</td>`,
@@ -426,9 +426,9 @@ function openCropper(file, ctx) {
 // ── Tank Types (list) ─────────────────────────────────────────
 function renderTypes() {
   const head = `<div class="row-between"><div class="section-title" style="margin:0">Tank types — reusable parts checklists</div>
-    <div style="display:flex;gap:8px"><button class="btn ghost sm" id="tNewEmpty">＋ Blank type</button><button class="btn sm" id="tNewFile">📄 New from spreadsheet</button></div></div>`;
+    <div style="display:flex;gap:8px"><button class="btn ghost sm" id="tNewEmpty">＋ Blank type</button><button class="btn sm" id="tNewFile">📄 New from file</button></div></div>`;
   if (!state.tankTypes.length) {
-    view().innerHTML = head + `<div class="empty"><div class="big">📐</div><h2>No tank types yet</h2><p class="muted">Import a parts list (Excel/CSV) to create your first type.</p></div>`;
+    view().innerHTML = head + `<div class="empty"><div class="big">📐</div><h2>No tank types yet</h2><p class="muted">Import a parts list (Excel, Word, PDF or CSV) to create your first type.</p></div>`;
   } else {
     view().innerHTML = head + `<div class="grid type-grid"></div>`;
     const grid = view().querySelector('.type-grid');
@@ -467,10 +467,10 @@ function newEmptyType() {
 function newTypeFromFile() {
   const body = el('div.form');
   body.innerHTML = `<div class="row"><label>Type name</label><input id="ntName" placeholder="e.g. 67 MVA"/></div>
-    <div class="row"><label>Parts spreadsheet (.xlsx / .csv)</label><div class="dropzone" id="dz"><div class="big">📄</div>Click to choose a spreadsheet<div class="hint">Columns detected automatically: item code, qty, description, phase</div></div>
-    <input type="file" id="fileIn" accept=".xlsx,.xls,.csv" style="display:none"/><div id="fname" class="hint"></div></div>
+    <div class="row"><label>Parts list (Excel, Word, PDF or CSV)</label><div class="dropzone" id="dz"><div class="big">📄</div>Click to choose a file<div class="hint">Reads the parts table from .xlsx · .csv · .docx · .pdf — columns (item code, qty, description, phase) detected automatically</div></div>
+    <input type="file" id="fileIn" accept=".xlsx,.xls,.xlsm,.csv,.docx,.pdf" style="display:none"/><div id="fname" class="hint"></div></div>
     <button class="btn" id="ntGo" disabled>Import & create type</button>`;
-  const m = modal({ title: 'New tank type from spreadsheet', body });
+  const m = modal({ title: 'New tank type from file', body });
   const fileIn = body.querySelector('#fileIn'); let chosen = null;
   const dz = body.querySelector('#dz');
   dz.onclick = () => fileIn.click();
@@ -496,7 +496,7 @@ async function renderTypeDetail() {
         <span class="muted" style="margin-left:8px">${tt.partCount} parts · ${tt.partsWithFiles}/${tt.partCount} with files</span></div>
       <div style="display:flex;gap:8px">
         <button class="btn ghost sm" id="addPart">＋ Add part</button>
-        <button class="btn ghost sm" id="impBtn">📄 Import spreadsheet</button>
+        <button class="btn ghost sm" id="impBtn">📄 Import file</button>
         <button class="btn ghost sm" id="exportBtn">📊 Export Excel</button>
         <button class="btn sm" id="filesBtn">📎 Upload files</button>
       </div>
@@ -531,8 +531,8 @@ function templateRow(p) {
   const fc = p.files?.length || 0;
   return `<tr>
     <td class="num muted">${p.no ?? ''}</td>
-    <td><input class="cell-edit partcode" type="text" value="${esc(p.itemCode || '')}" data-id="${p.id}" data-field="itemCode"/></td>
-    <td><input class="cell-edit" type="text" value="${esc(p.description || '')}" data-id="${p.id}" data-field="description"/></td>
+    <td><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" data-id="${p.id}" data-field="itemCode"/></td>
+    <td><input class="cell-edit" dir="auto" type="text" value="${esc(p.description || '')}" data-id="${p.id}" data-field="description"/></td>
     <td><input class="cell-edit cell-num" type="number" min="0" value="${p.qty ?? 1}" data-id="${p.id}" data-field="qty"/></td>
     <td>${selectHTML('parts', 'phase', p.defaultPhase, p.id, 'tpl', true)}</td>
     <td><button class="file-pill ${fc ? '' : 'none'}" data-files="${p.id}">📎 ${fc || '0'}</button></td>
@@ -561,7 +561,7 @@ function addTemplatePart(tt) {
 function importToType(tt) {
   const body = el('div.form');
   body.innerHTML = `<div class="row"><label>Mode</label><select id="mode"><option value="append">Append to existing parts</option><option value="replace">Replace all parts</option></select></div>
-    <div class="dropzone" id="dz"><div class="big">📄</div>Click to choose .xlsx / .csv</div><input type="file" id="fi" accept=".xlsx,.xls,.csv" style="display:none"/><div id="fn" class="hint"></div>
+    <div class="dropzone" id="dz"><div class="big">📄</div>Click to choose a file<div class="hint">Excel · CSV · Word (.docx) · PDF</div></div><input type="file" id="fi" accept=".xlsx,.xls,.xlsm,.csv,.docx,.pdf" style="display:none"/><div id="fn" class="hint"></div>
     <div id="res"></div>`;
   const m = modal({ title: `Import parts into ${tt.name}`, body });
   const fi = body.querySelector('#fi'); const dz = body.querySelector('#dz');
@@ -1006,7 +1006,7 @@ function renderGuide() {
 
     <div class="panel" style="margin-top:16px"><h3>Scenario playbook</h3>
       <table class="guide-table"><tbody>
-        <tr><td><b>New product</b></td><td>Tank Types → <i>New from spreadsheet</i> (or Blank + Add parts) → <i>Upload files</i> (PDFs/images named by item code) → open a part's 📎 → <b>Crop &amp; save</b> the 3D view as its photo.</td></tr>
+        <tr><td><b>New product</b></td><td>Tank Types → <i>New from file</i> (Excel/Word/PDF/CSV — or Blank + Add parts) → <i>Upload files</i> (PDFs/images named by item code) → open a part's 📎 → <b>Crop &amp; save</b> the 3D view as its photo.</td></tr>
         <tr><td><b>New order</b></td><td>New Tank → pick the type → the whole checklist is cloned automatically.</td></tr>
         <tr><td><b>A part fails QC</b></td><td>Set Status = <b>Rework</b>, bump <b>Rework count</b>, choose a reason. It shows in Reports → Rework.</td></tr>
         <tr><td><b>Partial delivery</b></td><td>Ship some now: enter <b>Deliver qty</b>; the remaining units keep moving through phases. Weekly rollup sums what was delivered.</td></tr>

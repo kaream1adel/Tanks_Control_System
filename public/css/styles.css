@@ -126,6 +126,10 @@ tbody tr:hover { background: var(--panel-2); }
 .muted { color: var(--muted); }
 .partname { font-weight: 500; }
 .partcode { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+/* Auto-direction for mixed Arabic/English content: Arabic flows right-to-left
+   and right-aligns, English stays left, per element — no global RTL flip. */
+.partname, .partcode, td .partname, td .partcode { unicode-bidi: plaintext; }
+.cell-num { unicode-bidi: normal; }
 .cell-edit { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 7px; width: 100%; min-width: 60px; transition: border 0.1s, background 0.1s; }
 .cell-edit:hover { border-color: var(--line-2); background: var(--bg-2); }
 .cell-edit:focus { border-color: var(--amber); background: var(--bg); outline: none; }

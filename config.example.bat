@@ -9,7 +9,7 @@ set APP_PASSWORD=
 
 rem Public link for people on other networks (Cloudflare Tunnel). 1 = on, 0 = off.
 rem First run downloads cloudflared (~50MB) once; the Share tab shows the link.
-set TUNNEL=1
+set TUNNEL=0
 
 rem Backups copied here (separate multiple with ; ). Point one at a USB / second
 rem drive and one at a synced cloud folder (Google Drive / OneDrive):
