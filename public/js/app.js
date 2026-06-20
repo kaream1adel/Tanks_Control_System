@@ -45,7 +45,11 @@ function setData(d) {
 
 // ── Chrome ────────────────────────────────────────────────────
 function wireChrome() {
-  $('#nav').addEventListener('click', (e) => { const b = e.target.closest('.nav-item'); if (b) go(b.dataset.route); });
+  const appEl = document.getElementById('app');
+  const closeNav = () => appEl.classList.remove('nav-open');
+  $('#navToggle')?.addEventListener('click', () => appEl.classList.toggle('nav-open'));
+  $('#navBackdrop')?.addEventListener('click', closeNav);
+  $('#nav').addEventListener('click', (e) => { const b = e.target.closest('.nav-item'); if (b) { closeNav(); go(b.dataset.route); } });
   $('#syncBtn').addEventListener('click', async () => {
     const btn = $('#syncBtn'); btn.classList.add('spinning');
     try { await refresh(); render(); toast('Refreshed', 'ok'); } finally { btn.classList.remove('spinning'); }
