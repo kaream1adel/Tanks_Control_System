@@ -27,62 +27,190 @@ const toAsciiDigits = (s) => String(s ?? '')
 
 const isArabic = (s) => /[؀-ۿﭐ-﷿ﹰ-﻿]/.test(String(s ?? ''));
 
-// Field synonyms (English + Arabic). Arabic terms are written naturally and run
-// through norm() below, so the dictionary and the input fold identically.
-const SYNONYMS = {
-  itemCode: ['itemcode', 'code', 'partcode', 'item', 'partno', 'partnumber',
-    'كود', 'الكود', 'كود الصنف', 'رقم الصنف', 'رقم القطعة', 'رقم الجزء', 'الموديل', 'موديل', 'رقم الموديل'],
-  no: ['no', 'number', 'seq', 'sn', 'serial',
-    'م', 'مسلسل', 'رقم', 'ت', 'رقم متسلسل', 'تسلسل'],
-  qty: ['qty', 'quantity', 'count', 'pcs',
-    'العدد', 'عدد', 'الكمية', 'كمية'],
-  description: ['description', 'desc', 'name', 'part', 'partname', 'detail', 'details',
-    'الوصف', 'وصف', 'البيان', 'بيان', 'الاسم', 'اسم', 'الصنف', 'صنف', 'المنتج', 'منتج',
-    'التوصيف', 'توصيف', 'النوع', 'نوع', 'المواصفات', 'مواصفات'],
-  defaultPhase: ['phase', 'defaultphase', 'stage', 'step', 'process',
-    'المرحلة', 'مرحلة', 'العملية', 'عملية', 'الخطوة', 'خطوة'],
-};
-// pre-fold every synonym once so matching uses identical normalization
-const NORM_SYNS = Object.fromEntries(Object.entries(SYNONYMS).map(([f, a]) => [f, [...new Set(a.map(norm))]]));
+// ── Field detection ──────────────────────────────────────────────────────────
+// Header wording varies enormously (especially in Arabic), so we never compare
+// whole strings. Each header cell is scored against KEYWORD STEMS — word
+// fragments that survive the article ال, plurals and suffixes — after splitting
+// into tokens, so multi-word / bilingual headers ("Item No رقم الصنف") still
+// match. A row-level resolver then gives each field its single best column.
+// Finally, any field whose header gave no signal is inferred from the column's
+// DATA (codes look like codes, qty are small ints, No. is sequential,
+// description is the long free text) — so detection works even when the column
+// titles are unfamiliar, paraphrased, or carry no recognizable words at all.
 
-// which field (if any) a single header cell maps to. Exact matches win across all
-// fields before any fuzzy contains-match, so short tokens like "No" can't be
-// swallowed by "partNo" under itemCode.
-function fieldFor(cell) {
-  const n = norm(cell);
-  if (!n) return null;
-  for (const [field, syns] of Object.entries(NORM_SYNS)) if (syns.includes(n)) return field;
-  for (const [field, syns] of Object.entries(NORM_SYNS)) {
-    for (const s of syns) {
-      if (Math.min(n.length, s.length) >= 4 && (n.includes(s) || s.includes(n))) return field;
-    }
+const SPLIT = /[\s_\-#.()،؛:|/\\]+/;
+// stem → weight. Strong, unambiguous stems outrank weak/shared ones on conflict.
+const STEMS = {
+  itemCode: [['كود', 6], ['code', 6], ['موديل', 6], ['model', 5], ['كتالوج', 6], ['catalog', 5],
+    ['باركود', 6], ['barcode', 5], ['sku', 6], ['رمز', 5], ['itemcode', 7], ['itemno', 6],
+    ['partno', 6], ['partnumber', 7], ['partcode', 7]],
+  qty: [['كمي', 6], ['عدد', 5], ['qty', 7], ['quantity', 7], ['quan', 5], ['count', 5], ['pcs', 5]],
+  description: [['وصف', 6], ['توصيف', 6], ['وصيف', 5], ['بيان', 6], ['مواصف', 6], ['مسمي', 5],
+    ['اسم', 5], ['صنف', 3], ['منتج', 5], ['نوع', 2], ['بند', 3], ['desc', 6], ['name', 5],
+    ['detail', 5], ['تفصيل', 4], ['product', 5]],
+  no: [['مسلسل', 7], ['تسلسل', 7], ['serial', 7], ['seq', 6], ['ترتيب', 5], ['رتبه', 5],
+    ['index', 5], ['idx', 5], ['order', 3]],
+  defaultPhase: [['مرحل', 6], ['phase', 7], ['stage', 6], ['عملي', 5], ['خطوه', 5],
+    ['process', 6], ['step', 5], ['تشغيل', 4], ['تصنيع', 3]],
+};
+// "thing" words name the part itself → lean description; with a number word → code
+const THING = ['صنف', 'قطعه', 'جزء', 'موديل', 'منتج', 'مكون', 'وحده', 'part', 'item', 'component'];
+// whole-cell serial words ("No", "م", "رقم" on their own)
+const NUM_EXACT = new Set(['م', 'ت', 'no', 'num', 'number', 'sn', 'رقم', 'الرقم', 'نمره', 'نمبر', 'رتبه']);
+
+// score a single header cell → { field: weight }
+function scoreCell(raw) {
+  const full = norm(raw);
+  const sc = {};
+  if (!full) return sc;
+  const add = (f, w) => { sc[f] = Math.max(sc[f] || 0, w); };
+  const toks = String(raw ?? '').split(SPLIT).map(norm).filter(Boolean);
+  const hit = (stem) => full.includes(stem) || toks.some((t) => t.includes(stem));
+  for (const [field, stems] of Object.entries(STEMS))
+    for (const [stem, w] of stems) if (hit(stem)) add(field, w);
+
+  const hasThing = THING.some(hit);
+  const hasNum = toks.some((t) => NUM_EXACT.has(t)) || full.includes('رقم') || full.includes('نمر') || full.includes('نمب');
+  const serialBare = toks.some((t) => NUM_EXACT.has(t)) && toks.length <= 2 && !hasThing;
+  if (hasNum && hasThing) add('itemCode', 6);   // "رقم الصنف" / "Item No" → a code, not a serial
+  else if (serialBare) add('no', 7);            // bare "م" / "No" / "رقم" → serial
+  else if (hasNum) add('no', 5);
+  if (hasThing) add('description', 2);          // "الصنف" / "القطعة" alone → a part name
+  return sc;
+}
+
+// adjust a header cell's scores using the SHAPE of the column's data — this is
+// what lets us tell a serial column ("Item No" holding 1,2,3) from a real code
+// column ("Reference No." holding TNK-A100) when the header words are ambiguous.
+function dataAdjust(sc, f) {
+  if (!f || !f.n) return;
+  const add = (k, w) => { sc[k] = (sc[k] || 0) + w; };
+  const seq = f.intCnt >= 2 && f.intCnt / f.n >= 0.6 && isSeq(f.vals);
+  const allInt = f.intCnt / f.n >= 0.8;
+  const numeric = f.numCnt / f.n >= 0.7;
+  const codey = f.codeCnt / f.n >= 0.5;
+  const texty = f.textCnt / f.n >= 0.5;
+  if (seq) add('no', 5); else if (!allInt) add('no', -6);          // sequential ⇒ serial; non-numeric ⇒ not
+  if (numeric && !seq && medOf(f.vals) <= 500) add('qty', 4); else if (texty) add('qty', -4);
+  if (codey) add('itemCode', 5); else if (seq) add('itemCode', -5); else if (texty) add('itemCode', -3);
+  if (texty) add('description', Math.min(5, 2 + f.avgLen / 12)); else add('description', -3);
+}
+
+// assign each field to its single best-scoring column (unique, strongest first),
+// combining header-word score with the column's data shape.
+function mapHeaderRow(aoa, hIdx) {
+  const cells = (aoa[hIdx] || []).map((c) => String(c ?? ''));
+  let ncols = cells.length;
+  for (let r = hIdx; r < Math.min(aoa.length, hIdx + 60); r++) ncols = Math.max(ncols, (aoa[r] || []).length);
+  const cands = [];
+  for (let ci = 0; ci < ncols; ci++) {
+    const sc = scoreCell(cells[ci] || '');
+    dataAdjust(sc, colStats(aoa, hIdx, ci));
+    for (const [f, w] of Object.entries(sc)) if (w > 0) cands.push({ ci, f, w });
   }
-  return null;
+  cands.sort((a, b) => b.w - a.w);
+  const fieldCol = new Map(); const usedCol = new Set();
+  for (const { ci, f } of cands) { if (fieldCol.has(f) || usedCol.has(ci)) continue; fieldCol.set(f, ci); usedCol.add(ci); }
+  return fieldCol;
 }
 
 const EMPTY = { parts: [], headerMap: {}, headers: [], rowCount: 0, headerRow: -1 };
 
-// scan the first rows for the one that looks most like a header (must contain an
-// item-code or description column; more recognized columns = higher score).
+// pick the row that looks most like a header once header words AND data shape are
+// considered (must yield a code or description column). Headers can be fuzzy,
+// dotted, bilingual, or even generic ("col1") — the data shape recovers them.
+// Drawings are kept out later, by the structural accept gate. Returns {idx,fields}.
 function findHeaderRow(aoa) {
-  let best = { idx: -1, score: 0, fields: null };
+  let best = { idx: -1, fields: null, score: -1 };
   const limit = Math.min(aoa.length, 30);
   for (let i = 0; i < limit; i++) {
-    const fields = new Map();
-    (aoa[i] || []).forEach((cell, ci) => { const f = fieldFor(cell); if (f && !fields.has(f)) fields.set(f, ci); });
+    if (!(aoa[i] || []).some((c) => String(c ?? '').trim())) continue;
+    const fields = mapHeaderRow(aoa, i);
     if (!fields.has('itemCode') && !fields.has('description')) continue;
-    const score = fields.size + (fields.has('itemCode') ? 2 : 0);
-    if (score > best.score) best = { idx: i, score, fields };
+    const score = fields.size * 10 + (fields.has('itemCode') ? 5 : 0) + (fields.has('description') ? 5 : 0) - i;
+    if (score > best.score) best = { idx: i, fields, score };
   }
   return best;
+}
+
+const medOf = (arr) => { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+// a serial enumerator counts up consecutively (1,2,3…) from a small start — used
+// to tell a real "No." column from a quantity column that merely happens to rise.
+const isSeq = (vals) => vals.length >= 2 && vals[0] <= 2 && vals.every((v, k) => k === 0 || v === vals[k - 1] + 1);
+
+// profile one column over the data rows so its role can be inferred from content
+function colStats(aoa, hIdx, ci) {
+  let n = 0, intCnt = 0, numCnt = 0, codeCnt = 0, textCnt = 0, lenSum = 0; const vals = [];
+  const limit = Math.min(aoa.length, hIdx + 60);
+  for (let r = hIdx + 1; r < limit; r++) {
+    const raw = String((aoa[r] || [])[ci] ?? '').trim();
+    if (!raw) continue;
+    n++; lenSum += raw.length;
+    const asc = toAsciiDigits(raw).replace(/\s+/g, '');
+    if (/^\d+$/.test(asc)) { intCnt++; numCnt++; vals.push(Number(asc)); }
+    else if (/^\d+(\.\d+)?$/.test(asc)) { numCnt++; vals.push(Number(asc)); }
+    else if (/\d/.test(asc) && raw.length <= 24 && !/\s.*\s/.test(raw)) codeCnt++; // a digit, short, ≤1 space → code-like
+    else if (raw.length >= 2) textCnt++;
+  }
+  return { ci, n, intCnt, numCnt, codeCnt, textCnt, avgLen: n ? lenSum / n : 0, vals };
+}
+
+// fill any field whose header gave no signal, using each free column's data shape
+function inferMissingFields(aoa, hIdx, fields) {
+  let ncols = 0;
+  for (let r = hIdx; r < Math.min(aoa.length, hIdx + 60); r++) ncols = Math.max(ncols, (aoa[r] || []).length);
+  const used = new Set(fields.values());
+  let free = [];
+  for (let ci = 0; ci < ncols; ci++) if (!used.has(ci)) free.push(colStats(aoa, hIdx, ci));
+  free = free.filter((f) => f.n);
+  const take = (field, c) => { if (!c) return; fields.set(field, c.ci); free = free.filter((f) => f.ci !== c.ci); };
+
+  if (!fields.has('no'))
+    take('no', free.filter((f) => f.intCnt / f.n >= 0.8 && isSeq(f.vals)).sort((a, b) => b.intCnt - a.intCnt)[0]);
+  if (!fields.has('qty'))
+    take('qty', free.filter((f) => f.numCnt / f.n >= 0.7 && medOf(f.vals) <= 500).sort((a, b) => b.numCnt - a.numCnt)[0]);
+  if (!fields.has('itemCode'))
+    take('itemCode', free.filter((f) => (f.codeCnt + f.intCnt) / f.n >= 0.6 && f.avgLen <= 24).sort((a, b) => b.codeCnt - a.codeCnt)[0]);
+  if (!fields.has('description'))
+    take('description', free.filter((f) => f.textCnt / f.n >= 0.5).sort((a, b) => b.avgLen - a.avgLen)[0]);
+}
+
+// Structural signature of a real parts list, judged from the mapped columns'
+// DATA: a consecutive serial enumerator (1,2,3…), real codes, real quantities.
+// Crucially each is measured against the row COUNT, not just the non-empty cells,
+// so a column that is mostly empty but holds a few stray codes (typical of a
+// scrambled drawing title block) does NOT count as a real code column.
+function dataSignature(aoa, hIdx, fields) {
+  let nRows = 0;
+  const lim = Math.min(aoa.length, hIdx + 60);
+  for (let r = hIdx + 1; r < lim; r++) if ((aoa[r] || []).some((c) => String(c ?? '').trim())) nRows++;
+  const need = Math.max(2, Math.ceil(nRows * 0.5));   // filled in ≥half the rows
+  const noNeed = Math.max(2, Math.ceil(nRows * 0.6));
+  const st = (f) => (fields.has(f) ? colStats(aoa, hIdx, fields.get(f)) : null);
+  const noS = st('no'), qtyS = st('qty'), codeS = st('itemCode');
+  return {
+    serial: Boolean(noS && noS.intCnt >= noNeed && noS.intCnt / Math.max(1, noS.n) >= 0.6 && isSeq(noS.vals)),
+    realQty: Boolean(qtyS && qtyS.numCnt >= need && qtyS.numCnt / Math.max(1, qtyS.n) >= 0.6),
+    realCode: Boolean(codeS && codeS.codeCnt >= need && codeS.codeCnt / Math.max(1, codeS.n) >= 0.5),
+  };
+}
+
+// Locate the parts table by its (fuzzy, bilingual) header row. No header words →
+// not a parts list (this is what keeps engineering drawings out).
+function findTable(aoa) {
+  const wb = findHeaderRow(aoa);
+  if (wb.idx < 0) return null;
+  inferMissingFields(aoa, wb.idx, wb.fields);
+  return { hIdx: wb.idx, fields: wb.fields };
 }
 
 // Shared core: turn a rows×cols grid into normalized parts. Used by every format.
 function aoaToParts(aoa) {
   if (!aoa || !aoa.length) return EMPTY;
 
-  const { idx: hIdx, fields } = findHeaderRow(aoa);
-  if (hIdx < 0) return EMPTY;
+  const tbl = findTable(aoa);
+  if (!tbl) return EMPTY;
+  const { hIdx, fields } = tbl;
 
   const headerCells = (aoa[hIdx] || []).map((c) => String(c ?? '').trim());
   const col = (field) => (fields.has(field) ? fields.get(field) : -1);
@@ -99,11 +227,22 @@ function aoaToParts(aoa) {
     && norm(cell(row, 'itemCode')) === norm(headerMap.itemCode)
     && norm(cell(row, 'description')) === norm(headerMap.description);
 
+  const sig = dataSignature(aoa, hIdx, fields);
+  const noCol = col('no');
+  // When the sheet has a reliable serial column, a genuine item line always
+  // carries a plain integer there. So a leading metadata block (Job order / Date
+  // / Rev.), a re-issue banner, or a trailing "الشكل / عدد N" shapes section —
+  // common in real loading/accessories check-lists — is skipped instead of being
+  // imported as junk. (Without a serial column we keep every described row.)
+  const serialMode = sig.serial && noCol >= 0;
+  const isItemNo = (v) => /^\d{1,5}[.)]?$/.test(toAsciiDigits(String(v ?? '')).replace(/\s/g, ''));
+
   const parts = [];
   let i = 0;
   let strong = 0; // rows that look like a real BOM line (description + another field)
   for (let r = hIdx + 1; r < aoa.length; r++) {
     const row = aoa[r] || [];
+    if (serialMode && !isItemNo(row[noCol])) continue; // not a numbered item line
     const itemCode = cell(row, 'itemCode');
     const description = cell(row, 'description');
     if (!itemCode && !description) continue;     // blank / separator row
@@ -120,10 +259,19 @@ function aoaToParts(aoa) {
     });
     if (noRaw) i = Math.max(i, Number(noRaw));
   }
-  // Reject "tables" that are really a drawing's title block (e.g. PART NUMBER /
-  // DESCRIPTION / QTY labels with no actual rows): a genuine parts list always
-  // has at least one row with a description plus a code/qty/number.
-  if (!strong) return EMPTY;
+  // Reject blocks that aren't really parts lists (drawing title blocks, revision
+  // histories, spec sheets, dimension noise). A genuine BOM needs a description,
+  // ≥2 real lines, AND a structural signature its imitators lack: a consecutive
+  // serial column backed by real codes or real quantities — or, for serial-less
+  // sheets, a real code+quantity pair with consistently filled rows. CAD BOM
+  // title-block templates have a serial-looking column but EMPTY codes/qty, so
+  // requiring real code/qty data turns them away.
+  const strongRatio = parts.length ? strong / parts.length : 0;
+  const ok = hasDesc && strong >= 2 && (
+    (sig.serial && (sig.realCode || sig.realQty))
+    || (sig.realCode && sig.realQty && strong >= 3 && strongRatio >= 0.8)
+  );
+  if (!ok) return EMPTY;
   return { parts, headerMap, headers: headerCells.filter(Boolean), rowCount: parts.length, headerRow: hIdx + 1 };
 }
 
@@ -167,13 +315,30 @@ function htmlTablesToAoas(html) {
 async function parseDocx(buffer) {
   const mammoth = (await import('mammoth')).default;
   const { value: html } = await mammoth.convertToHtml({ buffer });
-  // try each table; keep the one that yields the most parts
+  const tables = htmlTablesToAoas(html);
+  // try each table on its own; keep the one that yields the most parts
   let best = EMPTY;
-  for (const aoa of htmlTablesToAoas(html)) {
+  for (const aoa of tables) {
     const r = aoaToParts(aoa);
     if (r.parts.length > best.parts.length) best = r;
   }
+  // also try ALL tables concatenated — a parts list often spans several tables
+  // (with a metadata block as its own leading table, or the list split in two)
+  if (tables.length > 1) {
+    const r = aoaToParts(tables.flat());
+    if (r.parts.length > best.parts.length) best = r;
+  }
   return best;
+}
+
+// ── Word (.doc, legacy binary) ───────────────────────────────────────────────
+// word-extractor pulls the body text with table cells tab-separated and rows
+// newline-separated, which we rebuild into a grid and parse like everything else.
+async function parseDoc(buffer) {
+  const WordExtractor = (await import('word-extractor')).default;
+  const doc = await new WordExtractor().extract(buffer);
+  const aoa = doc.getBody().split(/\r?\n/).map((line) => line.split('\t').map((c) => c.trim()));
+  return aoaToParts(aoa);
 }
 
 // ── PDF ──────────────────────────────────────────────────────────────────────
@@ -199,7 +364,7 @@ async function parsePdf(buffer) {
   }).promise;
 
   const charW = [];
-  const pageRows = []; // [{ cells:[{start,text}] }, ...] in reading order
+  const pageRows = []; // [{ items:[{x,w,str}] }, ...] in reading order (all pages)
   const maxPages = Math.min(doc.numPages, 60);
 
   for (let p = 1; p <= maxPages; p++) {
@@ -211,59 +376,75 @@ async function parsePdf(buffer) {
     if (!items.length) continue;
     items.forEach((it) => { if (it.w && it.str.length) charW.push(it.w / it.str.length); });
 
-    // group into rows by baseline y (top of page first)
+    // group into rows by baseline y (top of page first). A generous tolerance
+    // keeps a value that sits a couple of px off its row (common for the serial
+    // column) on the same line as the rest of the row.
     items.sort((a, b) => b.y - a.y || a.x - b.x);
-    const rowTol = Math.max(2, (median(items.map((i) => i.h)) || 8) * 0.5);
-    const rows = [];
+    const rowTol = Math.max(4, (median(items.map((i) => i.h)) || 8) * 0.85);
     let cur = null;
     for (const it of items) {
-      if (!cur || Math.abs(it.y - cur.y) > rowTol) { cur = { y: it.y, items: [it] }; rows.push(cur); }
-      else cur.items.push(it);
-    }
-    // within each row, merge items into cells when the horizontal gap is large
-    const gap = Math.max(6, (median(charW) || 4) * 2);
-    for (const row of rows) {
-      row.items.sort((a, b) => a.x - b.x);
-      const cells = [];
-      let c = null;
-      for (const it of row.items) {
-        if (!c || it.x - c.end > gap) { c = { start: it.x, end: it.x + it.w, toks: [it] }; cells.push(c); }
-        else { c.toks.push(it); c.end = it.x + it.w; }
-      }
-      // join each cell's tokens; Arabic reads right-to-left, so reverse the x order
-      for (const cl of cells) {
-        const ar = cl.toks.some((t) => isArabic(t.str));
-        const ordered = ar ? [...cl.toks].sort((a, b) => b.x - a.x) : cl.toks;
-        cl.text = ordered.map((t) => t.str).join(' ').replace(/\s+/g, ' ').trim();
-      }
-      pageRows.push({ cells });
+      // compare to the row's last item's y so a slightly-drifting baseline (the
+      // serial digit often sits a few px low) chains into the same line
+      if (!cur || Math.abs(it.y - cur.lastY) > rowTol) { cur = { y: it.y, lastY: it.y, items: [it] }; pageRows.push(cur); }
+      else { cur.items.push(it); cur.lastY = it.y; }
     }
   }
   if (!pageRows.length) return EMPTY;
 
-  // cluster all cell starts into column bins so rows align under shared headers
-  const colGap = Math.max(10, (median(charW) || 4) * 3.5);
-  const starts = pageRows.flatMap((r) => r.cells.map((c) => c.start)).sort((a, b) => a - b);
-  const centers = [];
-  let bin = null;
-  for (const s of starts) {
-    if (!bin || s - bin.last > colGap) { bin = { sum: s, n: 1, last: s }; centers.push(bin); }
-    else { bin.sum += s; bin.n++; bin.last = s; }
+  // Column detection by whitespace GUTTERS: a column is an x-band covered by text
+  // in many rows; the empty bands between them are the gutters. This is far more
+  // reliable than per-row gap splitting for wide RTL description columns, whose
+  // words sit at many different x positions (which used to fragment the column).
+  const cw = median(charW) || 5;
+  const minX = Math.min(...pageRows.flatMap((r) => r.items.map((i) => i.x)));
+  const maxX = Math.max(...pageRows.flatMap((r) => r.items.map((i) => i.x + i.w)));
+  const BIN = 2;
+  const nbins = Math.max(1, Math.ceil((maxX - minX) / BIN) + 1);
+  const clampBin = (k) => Math.min(nbins - 1, Math.max(0, k));
+  // coverage = how many ROWS put text over each x-bin (per-row, so one wide title
+  // can't bridge a gutter that every data row leaves empty)
+  const cover = new Array(nbins).fill(0);
+  for (const row of pageRows) {
+    const marked = new Set();
+    for (const it of row.items) {
+      const a = clampBin(Math.floor((it.x - minX) / BIN));
+      const b = clampBin(Math.floor((it.x + it.w - minX) / BIN));
+      for (let k = a; k <= b; k++) marked.add(k);
+    }
+    for (const k of marked) cover[k]++;
   }
-  const colCenters = centers.map((b) => b.sum / b.n);
-  const colOf = (x) => {
+  // occupancy is RELATIVE to the busiest column: a true gutter only a few long
+  // (RTL) descriptions spill into still reads as empty, so qty/No stay separate.
+  const maxCover = Math.max(1, ...cover);
+  const thresh = Math.max(2, maxCover * 0.22);
+  const occ = cover.map((c) => c >= thresh);
+  const minGutter = Math.max(2, Math.round(cw / BIN)); // ~1 char of empty space = a real gutter
+  const bands = [];
+  let band = null, gap = 0;
+  for (let k = 0; k < nbins; k++) {
+    if (occ[k]) { if (!band) band = { lo: k, hi: k }; else band.hi = k; gap = 0; }
+    else if (band && ++gap >= minGutter) { bands.push(band); band = null; }
+  }
+  if (band) bands.push(band);
+  if (!bands.length) return EMPTY;
+  const bandX = bands.map((b) => ({ lo: minX + b.lo * BIN, hi: minX + (b.hi + 1) * BIN }));
+  const colOf = (it) => {
+    const c = it.x + it.w / 2;
+    for (let i = 0; i < bandX.length; i++) if (c >= bandX[i].lo && c <= bandX[i].hi) return i;
     let best = 0, dist = Infinity;
-    colCenters.forEach((c, i) => { const d = Math.abs(c - x); if (d < dist) { dist = d; best = i; } });
+    bandX.forEach((b, i) => { const d = Math.min(Math.abs(c - b.lo), Math.abs(c - b.hi)); if (d < dist) { dist = d; best = i; } });
     return best;
   };
 
-  const aoa = pageRows.map((r) => {
-    const out = new Array(colCenters.length).fill('');
-    for (const cell of r.cells) {
-      const ci = colOf(cell.start);
-      out[ci] = out[ci] ? out[ci] + ' ' + cell.text : cell.text;
-    }
-    return out;
+  const aoa = pageRows.map((row) => {
+    const buckets = bandX.map(() => []);
+    for (const it of row.items) buckets[colOf(it)].push(it);
+    return buckets.map((toks) => {
+      if (!toks.length) return '';
+      const ar = toks.some((t) => isArabic(t.str));
+      toks.sort((a, b) => (ar ? b.x - a.x : a.x - b.x)); // Arabic reads right-to-left
+      return toks.map((t) => t.str).join(' ').replace(/\s+/g, ' ').trim();
+    });
   });
   return aoaToParts(aoa);
 }
@@ -288,6 +469,6 @@ export async function parseAny(buffer, filename = '') {
   if (!known.includes(ext)) ext = sniffExt(buffer) || ext; // Arabic / mangled names → detect by bytes
   if (ext === 'pdf') return parsePdf(buffer);
   if (ext === 'docx') return parseDocx(buffer);
-  if (ext === 'doc') throw new Error('Old .doc format is not supported — save it as .docx, .pdf, or .xlsx and try again.');
+  if (ext === 'doc') return parseDoc(buffer);
   return parseSpreadsheet(buffer); // xlsx / xls / xlsm / csv (default)
 }
