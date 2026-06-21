@@ -170,7 +170,11 @@ if (PW) {
     res.redirect('/login.html');
   });
 }
-app.use(express.static(PUBLIC_DIR));
+// no-cache so the browser always picks up app.js / css / html updates after a
+// `git pull` + restart, without needing a manual hard-refresh.
+app.use(express.static(PUBLIC_DIR, {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
 
 app.get('/api/bootstrap', (req, res) => {
   res.json({
@@ -544,6 +548,59 @@ app.get('/api/tank-types/:id/export.xlsx', async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(tt.name)}_parts.xlsx"`);
   await wb.xlsx.write(res);
   res.end();
+});
+
+// ── Word / PDF export ────────────────────────────────────────────────────────
+// One HTML builder renders the same "Preparation Request" layout (shaded No/Qty,
+// red RTL-aware descriptions, embedded cropped photos) for both Word (served as
+// an .doc that Word opens) and PDF (a print-optimized page the browser saves as
+// PDF — handles Arabic shaping perfectly, no heavy server-side PDF/Chromium dep).
+const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function typeReportHtml(tt, parts, mode) {
+  const rows = parts.map((p) => {
+    let img = '';
+    const photo = get("SELECT path FROM part_files WHERE tank_type_id=? AND item_code=? AND kind='image' AND filename LIKE '%(crop)%' ORDER BY created_at DESC LIMIT 1", [tt.id, p.item_code]);
+    if (photo) {
+      try { const buf = fs.readFileSync(join(FILES_DIR, photo.path)); img = `<img src="data:image/png;base64,${buf.toString('base64')}"/>`; } catch { /* skip */ }
+    }
+    return `<tr><td class="c sh">${escHtml(p.no ?? '')}</td><td class="c code">${escHtml(p.item_code || '')}</td>`
+      + `<td class="c sh">${escHtml(p.qty ?? '')}</td><td class="desc" dir="auto">${escHtml(p.description || '')}</td><td class="c">${img}</td></tr>`;
+  }).join('');
+  const printBits = mode === 'print'
+    ? `<div class="noprint" style="text-align:center;margin:0 0 14px"><button onclick="window.print()" style="padding:10px 22px;font-size:15px;border-radius:8px;border:1px solid #888;background:#f5a623;cursor:pointer">🖨 Print / Save as PDF</button></div>`
+      + `<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},400);});<\/script>`
+    : '';
+  return `<!doctype html><html><head><meta charset="utf-8"/><title>${escHtml(tt.name)} — Accessories list</title>
+<style>
+ body{font-family:Calibri,Arial,sans-serif;color:#111;margin:24px;background:#fff;}
+ h1{font-size:22px;text-align:center;margin:0 0 2px;} h2{font-size:13px;text-align:center;color:#555;font-weight:normal;margin:0 0 16px;}
+ table{border-collapse:collapse;width:100%;} th,td{border:1px solid #000;padding:6px 9px;font-size:14px;vertical-align:middle;}
+ th{background:#fff;font-weight:bold;font-size:13px;text-align:center;border:2px solid #3f3f3f;}
+ td.c{text-align:center;} td.sh{background:#d9d9d9;font-weight:600;} td.code{font-family:Consolas,monospace;}
+ td.desc{color:#ff0000;font-weight:600;line-height:1.35;} img{display:block;margin:auto;max-width:340px;max-height:120px;object-fit:contain;}
+ @media print{.noprint{display:none;} body{margin:0;} @page{margin:12mm;}}
+</style></head><body>
+${printBits}<h1>${escHtml(tt.name)}</h1><h2>Accessories list — ${parts.length} parts</h2>
+<table><thead><tr><th style="width:55px">No.</th><th style="width:130px">ITEM CODE</th><th style="width:50px">Qty</th><th>Description</th><th style="width:350px">Image</th></tr></thead>
+<tbody>${rows}</tbody></table></body></html>`;
+}
+
+app.get('/api/tank-types/:id/export.doc', (req, res) => {
+  const tt = get('SELECT * FROM tank_types WHERE id=?', [req.params.id]);
+  if (!tt) return res.status(404).json({ error: 'Type not found' });
+  const parts = all('SELECT * FROM template_parts WHERE tank_type_id=? ORDER BY no', [tt.id]);
+  res.setHeader('Content-Type', 'application/msword');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(tt.name)}_parts.doc"`);
+  res.send(typeReportHtml(tt, parts, 'word'));
+});
+
+app.get('/api/tank-types/:id/print', (req, res) => {
+  const tt = get('SELECT * FROM tank_types WHERE id=?', [req.params.id]);
+  if (!tt) return res.status(404).send('Type not found');
+  const parts = all('SELECT * FROM template_parts WHERE tank_type_id=? ORDER BY no', [tt.id]);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(typeReportHtml(tt, parts, 'print'));
 });
 
 // import a parts list (xlsx/csv/docx/pdf) into a type (mode=append default, or replace)

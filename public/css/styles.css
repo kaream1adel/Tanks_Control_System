@@ -177,6 +177,16 @@ td.error { box-shadow: inset 3px 0 0 var(--red); }
 .import-result .ok { color: var(--green); } .import-result .warn { color: var(--orange); }
 .tag { display:inline-block; padding:2px 8px; border-radius:6px; background:var(--panel-2); border:1px solid var(--line-2); font-size:12px; font-family:var(--mono); margin:2px 4px 2px 0; }
 
+/* ── Dropdown menu (export) ──────────────────────────────────── */
+.dropdown { position: relative; display: inline-block; }
+.dropdown-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 180px;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow);
+  padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.dropdown-pop[hidden] { display: none; }
+.dropdown-pop button { text-align: left; padding: 10px 12px; background: transparent; border: none;
+  color: var(--text); border-radius: 7px; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.dropdown-pop button:hover { background: var(--panel); color: var(--amber); }
+
 /* ── Modal / file viewer ─────────────────────────────────────── */
 .modal-root:empty { display: none; }
 .modal-back { position: fixed; inset: 0; background: rgba(5,8,12,0.72); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 100; animation: fade .15s; padding: 30px; }

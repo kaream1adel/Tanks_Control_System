@@ -436,15 +436,34 @@ async function parsePdf(buffer) {
     return best;
   };
 
+  // join a column's text fragments in reading order, inserting a space ONLY when
+  // there's a real visual gap between fragments — fragments that touch are parts
+  // of one word (PDF often splits a word into several runs), so joining them with
+  // a space would corrupt it (e.g. "ماسو"+"رتين" must become "ماسورتين", not "ماسو رتين").
+  const spaceGap = Math.max(1.2, cw * 0.5);
+  const joinCell = (toks) => {
+    if (!toks.length) return '';
+    const ar = toks.some((t) => isArabic(t.str));
+    const ord = toks.sort((a, b) => (ar ? b.x - a.x : a.x - b.x)); // Arabic reads right-to-left
+    let out = '';
+    for (let i = 0; i < ord.length; i++) {
+      out += ord[i].str;
+      const nx = ord[i + 1];
+      if (nx) {
+        const visualGap = ar ? ord[i].x - (nx.x + nx.w) : nx.x - (ord[i].x + ord[i].w);
+        if (visualGap > spaceGap) out += ' ';
+      }
+    }
+    // an Arabic letter touching an ASCII digit is always a word boundary the PDF
+    // dropped (e.g. "بها4"→"بها 4", "ق380"→"ق 380") — keep Latin like "M8" intact
+    out = out.replace(/([ء-ي])(\d)/g, '$1 $2').replace(/(\d)([ء-ي])/g, '$1 $2');
+    return out.replace(/\s+/g, ' ').trim();
+  };
+
   const aoa = pageRows.map((row) => {
     const buckets = bandX.map(() => []);
     for (const it of row.items) buckets[colOf(it)].push(it);
-    return buckets.map((toks) => {
-      if (!toks.length) return '';
-      const ar = toks.some((t) => isArabic(t.str));
-      toks.sort((a, b) => (ar ? b.x - a.x : a.x - b.x)); // Arabic reads right-to-left
-      return toks.map((t) => t.str).join(' ').replace(/\s+/g, ' ').trim();
-    });
+    return buckets.map(joinCell);
   });
   return aoaToParts(aoa);
 }

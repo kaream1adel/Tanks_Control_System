@@ -501,7 +501,14 @@ async function renderTypeDetail() {
       <div style="display:flex;gap:8px">
         <button class="btn ghost sm" id="addPart">＋ Add part</button>
         <button class="btn ghost sm" id="impBtn">📄 Import file</button>
-        <button class="btn ghost sm" id="exportBtn">📊 Export Excel</button>
+        <div class="dropdown" id="exportDD">
+          <button class="btn ghost sm" id="exportBtn">⬇ Export ▾</button>
+          <div class="dropdown-pop" id="exportPop" hidden>
+            <button data-fmt="xlsx">📊 Excel (.xlsx)</button>
+            <button data-fmt="doc">📝 Word (.doc)</button>
+            <button data-fmt="pdf">📄 PDF (print)</button>
+          </div>
+        </div>
         <button class="btn sm" id="filesBtn">📎 Upload files</button>
       </div>
     </div>
@@ -514,12 +521,24 @@ async function renderTypeDetail() {
   $('#addPart').onclick = () => addTemplatePart(tt);
   $('#impBtn').onclick = () => importToType(tt);
   $('#filesBtn').onclick = () => uploadFilesTo(tt);
-  $('#exportBtn').onclick = async () => {
-    const btn = $('#exportBtn'); btn.disabled = true; const old = btn.textContent; btn.textContent = 'Exporting…';
-    try { const blob = await api.exportType(tt.id); downloadFile(`${sanitizeName(tt.name)}_parts.xlsx`, blob, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast('Excel exported', 'ok'); }
-    catch (e) { toast('Export failed: ' + e.message, 'err'); }
-    finally { btn.disabled = false; btn.textContent = old; }
+  const pop = $('#exportPop');
+  const closePop = () => { if (pop) { pop.hidden = true; document.removeEventListener('click', closePop); } };
+  $('#exportBtn').onclick = (e) => {
+    e.stopPropagation();
+    if (pop.hidden) { pop.hidden = false; setTimeout(() => document.addEventListener('click', closePop), 0); } else closePop();
   };
+  const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', doc: 'application/msword' };
+  pop.querySelectorAll('button').forEach((b) => b.onclick = async () => {
+    closePop();
+    const fmt = b.dataset.fmt;
+    if (fmt === 'pdf') { window.open(`/api/tank-types/${tt.id}/print`, '_blank'); return; } // browser → Save as PDF
+    try {
+      const res = await fetch(`/api/tank-types/${tt.id}/export.${fmt}`);
+      if (!res.ok) throw new Error('(' + res.status + ')');
+      downloadFile(`${sanitizeName(tt.name)}_parts.${fmt}`, await res.blob(), MIME[fmt]);
+      toast(`${fmt === 'doc' ? 'Word' : 'Excel'} exported`, 'ok');
+    } catch (e) { toast('Export failed: ' + e.message, 'err'); }
+  });
   const tbody = view().querySelector('#ttable tbody');
   tbody.addEventListener('change', onTemplateEdit);
   tbody.querySelectorAll('[data-files]').forEach((b) => b.addEventListener('click', () => {
