@@ -35,6 +35,7 @@ export const api = {
   newTypeFromFile: (form) => upload('/api/tank-types/new-from-file', form),
   importToType: (id, form, mode = 'append') => upload(`/api/tank-types/${id}/import?mode=${mode}`, form),
   uploadFiles: (id, form) => upload(`/api/tank-types/${id}/files`, form),
+  addFilesToCode: (typeId, code, form) => upload(`/api/tank-types/${typeId}/add-files?code=${encodeURIComponent(code)}`, form),
 
   // template parts
   addTemplatePart: (typeId, payload) => req('POST', `/api/tank-types/${typeId}/parts`, payload),

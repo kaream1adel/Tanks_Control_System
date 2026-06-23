@@ -451,7 +451,7 @@ async function openPartFiles(partId) {
   const p = state.parts.find((x) => x.id === partId);
   try {
     const files = await api.partFiles(partId);
-    openFileViewer(files, p?.partName || 'Part files', p?.itemCode || '', { partId, itemCode: p?.itemCode, reload: () => api.partFiles(partId) });
+    openFileViewer(files, p?.partName || 'Part files', p?.itemCode || '', { partId, typeId: tankById(p?.tankId)?.tankTypeId, itemCode: p?.itemCode, reload: () => api.partFiles(partId) });
   } catch (e) { toast('Could not load files: ' + e.message, 'err'); }
 }
 
@@ -460,19 +460,53 @@ async function openPartFiles(partId) {
 // browser download managers (IDM etc.) can't hijack the request — they display
 // inline instead of triggering a download.
 function openFileViewer(files, title, subtitle, ctx) {
+  const canCrop = !!ctx;
+  const canAdd = !!(ctx && ctx.typeId);
+  const objectUrls = [];
+  async function reopenWith() {
+    try { await refresh(); } catch { /* ignore */ }
+    if (state.route === 'parts') renderTable();
+    else if (state.route === 'typeDetail') renderTypeDetail();
+    else if (state.route === 'tankDetail') renderTankDetail();
+    let fresh = files; try { fresh = await ctx.reload(); } catch { /* keep */ }
+    objectUrls.forEach(URL.revokeObjectURL);
+    openFileViewer(fresh, title, subtitle, ctx);
+  }
+  const addZone = canAdd
+    ? `<div class="dropzone" id="addFilesDz" style="margin-bottom:14px;padding:18px"><div class="big">⬆</div>Drop files here or click to add to <b dir="auto">${esc(ctx.itemCode || 'this part')}</b><div class="hint">PDFs or images — attached directly to this part</div></div><input type="file" id="addFilesIn" multiple style="display:none"/>`
+    : '';
+  function wireAddZone(body) {
+    if (!canAdd) return;
+    const dz = body.querySelector('#addFilesDz'), inp = body.querySelector('#addFilesIn');
+    if (!dz) return;
+    const doAdd = async (fl) => {
+      const list = [...fl].filter((f) => f && f.size >= 0);
+      if (!list.length) return;
+      if (!ctx.itemCode) { toast('Set an item code for this part first, then add files.', 'err'); return; }
+      dz.innerHTML = `<div class="loading">Uploading ${list.length} file(s)…</div>`;
+      const fd = new FormData(); list.forEach((f) => fd.append('files', f, f.name));
+      try { const r = await api.addFilesToCode(ctx.typeId, ctx.itemCode, fd); toast(`Added ${r.added} file(s)`, 'ok'); }
+      catch (e) { toast('Add failed: ' + e.message, 'err'); }
+      reopenWith();
+    };
+    dz.onclick = () => inp.click();
+    inp.onchange = () => doAdd(inp.files);
+    wireDrag(dz, doAdd);
+  }
+
   const body = el('div');
   if (!files.length) {
-    body.innerHTML = `<div class="empty"><div class="big">📄</div>No files for item code <b>${esc(subtitle || '—')}</b> yet.<br/><span class="muted">Add PDFs/images in Tank Types → this type → Upload files (named by item code).</span></div>`;
+    body.innerHTML = addZone + `<div class="empty"><div class="big">📄</div>No files for item code <b>${esc(subtitle || '—')}</b> yet.${canAdd ? '' : '<br/><span class="muted">Add PDFs/images in Tank Types → this type → Upload files (named by item code).</span>'}</div>`;
     modal({ title, subtitle: subtitle ? `Item code: ${subtitle}` : '', body });
+    wireAddZone(body);
     return;
   }
-  const canCrop = !!ctx;
-  body.innerHTML = `
+  body.innerHTML = addZone + `
     <div class="tabs">${files.map((f, i) => `<button class="tab ${i === 0 ? 'on' : ''}" data-i="${i}">${f.kind === 'pdf' ? '📕' : f.kind === 'image' ? '🖼' : '📎'} ${esc(f.filename)}</button>`).join('')}</div>
     ${canCrop ? '<div class="viewer-actions"><button class="btn sm" id="cropBtn">✂ Crop &amp; save as photo</button><button class="btn ghost sm" id="delFileBtn">🗑 Delete this file</button><span class="hint">Crop the 3D view (or any region) and save it as this part\'s photo — in place.</span></div>' : ''}
     <div id="bigview"></div>`;
   const big = body.querySelector('#bigview');
-  const cache = new Map(); const objectUrls = [];
+  const cache = new Map();
   let cur = 0;
   async function blobUrl(f) {
     if (cache.has(f.id)) return cache.get(f.id);
@@ -493,14 +527,8 @@ function openFileViewer(files, title, subtitle, ctx) {
     body.querySelectorAll('.tab').forEach((x) => x.classList.remove('on')); b.classList.add('on'); cur = Number(b.dataset.i); show(files[cur]);
   }));
   show(files[0]);
-  const m = modal({ title, subtitle: subtitle ? `Item code: ${subtitle}` : '', body, onClose: () => objectUrls.forEach(URL.revokeObjectURL) });
-  const reopenWith = async () => {
-    try { await refresh(); } catch { /* ignore */ }
-    if (state.route === 'parts') renderTable(); else if (state.route === 'typeDetail') renderTypeDetail();
-    let fresh = files; try { fresh = await ctx.reload(); } catch { /* keep */ }
-    objectUrls.forEach(URL.revokeObjectURL);
-    openFileViewer(fresh, title, subtitle, ctx);
-  };
+  modal({ title, subtitle: subtitle ? `Item code: ${subtitle}` : '', body, onClose: () => objectUrls.forEach(URL.revokeObjectURL) });
+  wireAddZone(body);
   if (canCrop) {
     body.querySelector('#cropBtn').onclick = async () => {
       const saved = await openCropper(files[cur], ctx);

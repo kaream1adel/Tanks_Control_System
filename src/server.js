@@ -862,6 +862,31 @@ app.post('/api/tank-types/:id/files', upload.array('files'), (req, res) => {
   res.json({ matched: matched.length, unmatched, matchedDetail: matched, type: tankTypeSummary(get('SELECT * FROM tank_types WHERE id=?', [tt.id])) });
 });
 
+// attach uploaded files DIRECTLY to one part (its item code), no filename match.
+// `code` comes via query string so item codes with slashes/spaces are safe.
+app.post('/api/tank-types/:id/add-files', upload.array('files'), (req, res) => {
+  const tt = get('SELECT * FROM tank_types WHERE id=?', [req.params.id]);
+  if (!tt) return res.status(404).json({ error: 'Type not found' });
+  const code = (req.query.code || '').toString().trim();
+  if (!code) return res.status(400).json({ error: 'This part has no item code yet — set an item code first, then add files.' });
+  if (!req.files?.length) return res.status(400).json({ error: 'No files uploaded' });
+  const destDir = join(FILES_DIR, tt.id);
+  fs.mkdirSync(destDir, { recursive: true });
+  let added = 0;
+  for (const f of req.files) {
+    const original = Buffer.from(f.originalname, 'latin1').toString('utf8'); // multer mangles non-ascii
+    const id = uid();
+    const safe = `${id}${extname(original).toLowerCase()}`;
+    fs.writeFileSync(join(destDir, safe), f.buffer);
+    run('INSERT INTO part_files(id,tank_type_id,item_code,filename,kind,path,size,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      [id, tt.id, code, original, fileKind(original), join(tt.id, safe), f.size, now()]);
+    added++;
+  }
+  logActivity('files', `Added ${added} file(s) to item ${code}`, { itemCode: code });
+  persist();
+  res.json({ ok: true, added });
+});
+
 // save a cropped image as a photo for an item code (attaches like any file)
 function savePhoto(typeId, itemCode, buffer) {
   const destDir = join(FILES_DIR, typeId);
