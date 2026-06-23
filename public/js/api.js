@@ -60,6 +60,8 @@ export const api = {
   // live-sync + export
   version: () => req('GET', '/api/version'),
   share: () => req('GET', '/api/share'),
+  tunnelStart: () => req('POST', '/api/tunnel/start'),
+  tunnelStop: () => req('POST', '/api/tunnel/stop'),
   exportType: async (id) => { const res = await fetch(`/api/tank-types/${id}/export.xlsx`); if (!res.ok) throw new Error('Export failed (' + res.status + ')'); return res.blob(); },
   exportBlob: async (url) => { const res = await fetch(url); if (!res.ok) throw new Error('Export failed (' + res.status + ')'); return res.blob(); },
 

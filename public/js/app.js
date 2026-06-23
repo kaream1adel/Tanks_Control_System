@@ -1150,13 +1150,18 @@ async function renderShare() {
       <div class="share-qr">${s.qr || ''}</div>
       <p class="guide-p" style="margin-top:14px">Send people <b>this link + the password</b> below. They open it in any browser, on any network — no install.</p>
       <p class="guide-p">${pwLine}</p>
-      <div class="hint">This free link changes if the host restarts — reopen this page to get the current one. For a permanent link, see <code>DEPLOY.md</code>.</div>`;
+      <div style="margin-top:10px"><button class="btn ghost sm" id="tunToggle">⏻ Turn off public link</button></div>
+      <div class="hint" style="margin-top:8px">This free link changes if you restart the app — reopen this page for the current one. For a permanent link, see <code>DEPLOY.md</code>.</div>`;
   } else if (t.status === 'downloading' || t.status === 'starting') {
-    linkBlock = `<div class="loading">${t.status === 'downloading' ? 'Setting up the tunnel (downloading cloudflared, one-time)…' : 'Connecting your public link…'}</div>`;
+    linkBlock = `<div class="loading">${t.status === 'downloading' ? 'Setting up the tunnel (downloading helper, one-time ~50MB)…' : 'Connecting your public link…'}</div>
+      <div style="margin-top:10px"><button class="btn ghost sm" id="tunToggle">Cancel</button></div>`;
   } else if (t.status === 'error') {
-    linkBlock = `<div class="banner warn">Tunnel error: ${esc(t.error || 'unknown')}. It will keep retrying. Check the host's internet.</div>`;
+    linkBlock = `<div class="banner warn">Tunnel error: ${esc(t.error || 'unknown')}. Check this machine's internet.</div>
+      <button class="btn" id="tunToggle">🌐 Try again</button>`;
   } else {
-    linkBlock = `<div class="banner">The public link is <b>off</b>. To turn it on, edit <b>Start Tank Control.bat</b>, set <code>set TUNNEL=1</code>, and relaunch. Then this page shows a link to share.</div>`;
+    linkBlock = `<p class="guide-p">The public link is <b>off</b>. Turn it on to reach <b>this machine's</b> app from anywhere (any network) through a secure link.</p>
+      <button class="btn" id="tunToggle">🌐 Enable public access</button>
+      <div class="hint" style="margin-top:8px">First time downloads a small helper (~50&nbsp;MB), once. A password is set automatically so the link is never open.</div>`;
   }
 
   view().innerHTML = `
@@ -1177,8 +1182,18 @@ async function renderShare() {
     </div>`;
   const cp = $('#copyUrl');
   if (cp) cp.onclick = () => { navigator.clipboard?.writeText(t.url); toast('Link copied', 'ok'); };
-  // keep refreshing until the link is up
-  if (['downloading', 'starting', 'off'].includes(t.status)) setTimeout(() => { if (state.route === 'share') renderShare(); }, 3000);
+  const tg = $('#tunToggle');
+  if (tg) tg.onclick = async () => {
+    const turningOn = t.status === 'off' || t.status === 'error';
+    tg.disabled = true; tg.textContent = turningOn ? 'Starting…' : 'Stopping…';
+    try {
+      if (turningOn) { await api.tunnelStart(); toast('Enabling public link…', 'ok'); }
+      else { await api.tunnelStop(); toast('Public link turned off', 'ok'); }
+    } catch (e) { toast(e.message, 'err'); }
+    if (state.route === 'share') renderShare();
+  };
+  // while the link is coming up, keep refreshing so the URL appears automatically
+  if (['downloading', 'starting'].includes(t.status)) setTimeout(() => { if (state.route === 'share') renderShare(); }, 2500);
 }
 
 // ── Guide & Data Safety (playbook) ────────────────────────────

@@ -9,7 +9,7 @@ import { initDb, all, get, run, persist, tx, dataVersion } from './db.js';
 import { ensureSeeded } from './seed.js';
 import { parseAny } from './import.js';
 import { backupNow } from './backup.js';
-import { startTunnel, tunnelInfo } from './tunnel.js';
+import { startTunnel, stopTunnel, tunnelInfo } from './tunnel.js';
 import ExcelJS from 'exceljs';
 import QRCode from 'qrcode';
 import { PUBLIC_DIR, FILES_DIR, DATA_DIR } from './paths.js';
@@ -154,22 +154,36 @@ function autoPassword() {
   fs.writeFileSync(f, pw);
   return pw;
 }
-const AUTO_PW = (TUNNEL_ON && !process.env.APP_PASSWORD) ? autoPassword() : '';
-const PW = process.env.APP_PASSWORD || AUTO_PW;
-const AUTH = PW ? crypto.createHash('sha256').update('tankctl:' + PW).digest('hex').slice(0, 32) : '';
-const cookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]));
-if (PW) {
-  app.post('/login', (req, res) => {
-    if ((req.body?.password || '') === PW) { res.setHeader('Set-Cookie', `tc_auth=${AUTH}; HttpOnly; SameSite=Lax; Max-Age=2592000; Path=/`); res.json({ ok: true }); }
-    else res.status(401).json({ error: 'Wrong password' });
-  });
-  app.use((req, res, next) => {
-    const open = req.path === '/login' || req.path === '/login.html' || req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path === '/favicon.ico';
-    if (open || cookies(req).tc_auth === AUTH) return next();
-    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Auth required' });
-    res.redirect('/login.html');
-  });
+// Dynamic password gate. The active password can be turned on AT RUNTIME — when
+// the public tunnel is enabled from the Share page we never expose the app
+// unprotected, so we auto-generate a password then (and drop it when it's off).
+const gate = { pw: '', auth: '', auto: false };
+function setGatePw(pw, isAuto = false) {
+  gate.pw = pw || '';
+  gate.auto = !!(pw && isAuto);
+  gate.auth = pw ? crypto.createHash('sha256').update('tankctl:' + pw).digest('hex').slice(0, 32) : '';
 }
+const authCookie = () => `tc_auth=${gate.auth}; HttpOnly; SameSite=Lax; Max-Age=2592000; Path=/`;
+function ensureGatePassword() { // protect the link when the tunnel is switched on
+  if (gate.pw) return false;
+  setGatePw(process.env.APP_PASSWORD || autoPassword(), !process.env.APP_PASSWORD);
+  return true;
+}
+if (process.env.APP_PASSWORD) setGatePw(process.env.APP_PASSWORD);
+else if (TUNNEL_ON) setGatePw(autoPassword(), true);
+
+const cookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]));
+app.post('/login', (req, res) => {
+  if (gate.pw && (req.body?.password || '') === gate.pw) { res.setHeader('Set-Cookie', authCookie()); res.json({ ok: true }); }
+  else res.status(401).json({ error: 'Wrong password' });
+});
+app.use((req, res, next) => {
+  if (!gate.auth) return next(); // no password active → open (LAN use)
+  const open = req.path === '/login' || req.path === '/login.html' || req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path === '/favicon.ico';
+  if (open || cookies(req).tc_auth === gate.auth) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Auth required' });
+  res.redirect('/login.html');
+});
 // no-cache so the browser always picks up app.js / css / html updates after a
 // `git pull` + restart, without needing a manual hard-refresh.
 app.use(express.static(PUBLIC_DIR, {
@@ -296,7 +310,22 @@ app.get('/api/share', async (req, res) => {
   const best = t.url || lan[0] || `http://localhost:${PORT}`;
   let qr = '';
   try { qr = await QRCode.toString(best, { type: 'svg', margin: 1, width: 200 }); } catch { /* ignore */ }
-  res.json({ tunnel: t, lan, qr, qrFor: best, password: { set: !!PW, auto: AUTO_PW || null } });
+  res.json({ tunnel: t, lan, qr, qrFor: best, password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null } });
+});
+
+// Turn the public link (Cloudflare tunnel) on/off at runtime — no restart, no
+// config edit. Switching it on auto-protects the app with a password if none was
+// set (and logs the caller in via cookie so they aren't locked out).
+app.post('/api/tunnel/start', (req, res) => {
+  const created = ensureGatePassword();
+  startTunnel(PORT);
+  if (created) res.setHeader('Set-Cookie', authCookie());
+  res.json({ ok: true, tunnel: tunnelInfo(), password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null } });
+});
+app.post('/api/tunnel/stop', (req, res) => {
+  stopTunnel();
+  if (gate.auto) setGatePw(''); // drop the auto password once the public link is down
+  res.json({ ok: true, tunnel: tunnelInfo() });
 });
 
 // activity log — recent changes across the whole app (audit trail)
@@ -1004,7 +1033,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  ⚙  Tank Control (local) → http://localhost:${PORT}`);
   const ips = lanIPs();
   if (ips.length) console.log(`  on this network:        ${ips.map((ip) => `http://${ip}:${PORT}`).join('   ')}`);
-  console.log(`  data: app.sqlite  ·  ${all('SELECT 1 FROM tank_types').length} tank type(s)${PW ? '  ·  🔒 password on' : ''}${AUTO_PW ? ` (auto: ${AUTO_PW})` : ''}\n`);
+  console.log(`  data: app.sqlite  ·  ${all('SELECT 1 FROM tank_types').length} tank type(s)${gate.pw ? '  ·  🔒 password on' : ''}${gate.auto ? ` (auto: ${gate.pw})` : ''}\n`);
   // durability: back up shortly after boot, then on a schedule
   const everyH = Number(process.env.BACKUP_EVERY_HOURS) || 6;
   setTimeout(() => runBackup('startup'), 4000);
