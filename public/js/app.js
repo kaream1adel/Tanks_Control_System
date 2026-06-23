@@ -5,7 +5,7 @@ const DONE = new Set(['Done', 'Delivered']);
 
 const state = {
   tankTypes: [], tanks: [], parts: [], options: { parts: {}, instances: {}, people: {} },
-  route: 'overview', currentTypeId: null,
+  route: 'overview', currentTypeId: null, currentTankId: null,
   tankFilter: 'all', statusFilter: 'all', phaseFilter: 'all', group: true, q: '',
   sort: { key: 'no', dir: 1 },
   followTankId: null, followTab: 'daily', followDate: new Date().toISOString().slice(0, 10), followPhase: '',
@@ -64,14 +64,15 @@ function go(route, opts = {}) {
   state.route = route;
   if (opts.tankFilter) state.tankFilter = opts.tankFilter;
   if (opts.typeId) state.currentTypeId = opts.typeId;
+  if (opts.tankId) state.currentTankId = opts.tankId;
   setActive(); render();
 }
 function setActive() { document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.route === state.route)); }
 
 function render() {
-  const crumbs = { overview: 'Overview', tanks: 'Tanks', parts: 'Parts', types: 'Tank Types', rework: 'Rework Analytics', followup: 'Follow-up', reports: 'Reports', settings: 'Settings', share: 'Share access', guide: 'Guide & Data Safety', new: 'New Tank', typeDetail: 'Tank Type' };
+  const crumbs = { overview: 'Overview', tanks: 'Tanks', parts: 'Parts', types: 'Tank Types', rework: 'Rework Analytics', followup: 'Follow-up', reports: 'Reports', settings: 'Settings', share: 'Share access', guide: 'Guide & Data Safety', new: 'New Tank', typeDetail: 'Tank Type', tankDetail: 'Tank' };
   $('#crumb').textContent = crumbs[state.route] || '';
-  ({ overview: renderOverview, tanks: renderTanks, parts: renderParts, types: renderTypes, typeDetail: renderTypeDetail, rework: renderRework, followup: renderFollowup, reports: renderReports, settings: renderSettings, share: renderShare, guide: renderGuide, new: renderNew }[state.route] || renderOverview)();
+  ({ overview: renderOverview, tanks: renderTanks, parts: renderParts, types: renderTypes, typeDetail: renderTypeDetail, tankDetail: renderTankDetail, rework: renderRework, followup: renderFollowup, reports: renderReports, settings: renderSettings, share: renderShare, guide: renderGuide, new: renderNew }[state.route] || renderOverview)();
 }
 
 // ── Overview ──────────────────────────────────────────────────
@@ -116,7 +117,7 @@ function renderOverview() {
     </div>
     <div class="section-title" style="margin-top:18px">Phase distribution per tank</div>
     <div class="grid phase-pie-grid">${state.tanks.map(tankPhaseCard).join('')}</div>`;
-  view().querySelectorAll('[data-tank]').forEach((n) => n.addEventListener('click', () => go('parts', { tankFilter: n.dataset.tank })));
+  view().querySelectorAll('[data-tank]').forEach((n) => n.addEventListener('click', () => go('tankDetail', { tankId: n.dataset.tank })));
 }
 
 // donut of a tank's parts by phase (hand-built, dependency-free)
@@ -165,8 +166,8 @@ function tankCard(t) {
       </div></div>
     <div style="display:flex;gap:8px;margin-top:14px" data-stop>
       ${selectHTML('instances', 'status', t.status, t.id, 'tank')} ${selectHTML('instances', 'priority', t.priority, t.id, 'tank')}</div>
-    <div style="margin-top:12px"><button class="btn ghost" style="width:100%" data-open>Open parts →</button></div>`;
-  card.querySelector('[data-open]').onclick = () => go('parts', { tankFilter: t.id });
+    <div style="margin-top:12px"><button class="btn ghost" style="width:100%" data-open>Open tank →</button></div>`;
+  card.querySelector('[data-open]').onclick = () => go('tankDetail', { tankId: t.id });
   card.querySelector('[data-del]').onclick = async (e) => {
     e.stopPropagation();
     if (!confirm(`Delete tank "${t.name}" and all its tracking rows? This cannot be undone.`)) return;
@@ -175,6 +176,159 @@ function tankCard(t) {
   card.querySelector('[data-stop]').addEventListener('click', (e) => e.stopPropagation());
   card.querySelectorAll('select.cell-edit').forEach((s) => s.addEventListener('change', onTankEdit));
   return card;
+}
+
+// ── Tank detail (dedicated per-tank page: status + proofs + export) ──────────
+function renderTankDetail() {
+  const t = state.tanks.find((x) => x.id === state.currentTankId);
+  if (!t) { go('tanks'); return; }
+  $('#crumb').textContent = t.name || 'Tank';
+  const parts = state.parts.filter((p) => p.tankId === t.id).slice().sort((a, b) => (a.no ?? 0) - (b.no ?? 0));
+  const delivered = parts.filter((p) => (p.qtyTotal || 0) > 0 && (p.deliveredQty || 0) >= p.qtyTotal).length;
+  const cols = COLS; // single tank → no Tank column
+
+  view().innerHTML = `
+    <div class="row-between">
+      <div><button class="btn ghost sm" id="back">← Tanks</button>
+        <span style="font-size:18px;font-weight:600;margin-left:12px">${esc(t.name)}</span>
+        <span class="muted" style="margin-left:8px">${esc(t.client || '')}${t.tankType ? ' · ' + esc(t.tankType) : ''}</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn ghost sm" id="followBtn">📅 Follow-up</button>
+        <div class="dropdown" id="exportDD">
+          <button class="btn ghost sm" id="exportBtn">⬇ Export ▾</button>
+          <div class="dropdown-pop" id="exportPop" hidden>
+            <button data-fmt="xlsx">📊 Excel (.xlsx)</button>
+            <button data-fmt="doc">📝 Word (.doc)</button>
+            <button data-fmt="pdf">📄 PDF (print)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="grid kpis" style="margin-bottom:16px">
+      <div class="panel kpi amber"><div class="label">Completion</div><div class="value">${t.completion}<small>%</small></div><div style="margin-top:10px">${bar(t.completion, t.completion === 100)}</div></div>
+      <div class="panel kpi"><div class="label">Parts done</div><div class="value">${t.partsDone}<small>/ ${t.partsTotal}</small></div></div>
+      <div class="panel kpi"><div class="label">Delivered</div><div class="value" style="color:var(--green)">${delivered}<small>/ ${parts.length}</small></div></div>
+      <div class="panel kpi"><div class="label">In rework</div><div class="value" style="color:var(--red)">${t.reworkParts || 0}</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="muted">Status</span> ${selectHTML('instances', 'status', t.status, t.id, 'tank')}
+      <span class="muted">Priority</span> ${selectHTML('instances', 'priority', t.priority, t.id, 'tank')}
+      ${t.deliveryDate ? `<span class="muted">· Due ${esc(fmtDate(t.deliveryDate))}</span>` : ''}
+    </div>
+    <div class="section-title">Parts — live status</div>
+    <div class="table-wrap"><table id="tdParts">
+      <thead><tr>${cols.map((c) => `<th>${c.label}</th>`).join('')}</tr></thead>
+      <tbody>${parts.map((p) => partRow(p, cols)).join('') || `<tr><td colspan="${cols.length}"><div class="empty"><div class="big">▤</div>No parts in this tank.</div></td></tr>`}</tbody>
+    </table></div>
+    ${assigneeDatalist()}
+    <div class="section-title" style="margin-top:24px">Delivery proofs</div>
+    <div class="panel">
+      <div class="dropzone" id="proofDz"><div class="big">📷</div>Click or drop photos / PDFs of delivery proofs here<div class="hint">Images embed directly; PDFs are saved with a preview image — both appear in the exported report</div></div>
+      <input type="file" id="proofIn" accept="image/*,application/pdf" multiple style="display:none"/>
+      <div class="viewer-grid" id="proofGrid" style="margin-top:14px"></div>
+    </div>`;
+
+  $('#back').onclick = () => go('tanks');
+  $('#followBtn').onclick = () => { state.followTankId = t.id; go('followup'); };
+  // tank status/priority selects (in the meta panel only) → onTankEdit
+  view().querySelectorAll('.panel > select.cell-edit').forEach((s) => s.addEventListener('change', onTankEdit));
+  // parts table editing
+  const tb = view().querySelector('#tdParts tbody');
+  tb.addEventListener('change', onPartEdit);
+  tb.querySelectorAll('[data-files]').forEach((b) => b.addEventListener('click', () => openPartFiles(b.dataset.files)));
+
+  wireExportMenu({
+    xlsx: `/api/tanks/${t.id}/report.xlsx`, doc: `/api/tanks/${t.id}/report.doc`,
+    pdf: `/api/tanks/${t.id}/report-print`, filename: `${sanitizeName(t.name)}_status`,
+  });
+
+  // delivery proofs
+  loadProofs(t.id);
+  const dz = $('#proofDz'), input = $('#proofIn');
+  dz.onclick = () => input.click();
+  input.onchange = () => { if (input.files.length) addProofs(t.id, [...input.files]); input.value = ''; };
+  wireDrag(dz, (files) => files.length && addProofs(t.id, files));
+}
+
+// generic Export ▾ dropdown wiring (Excel/Word download, PDF → print tab)
+function wireExportMenu({ xlsx, doc, pdf, filename }) {
+  const pop = $('#exportPop'); if (!pop) return;
+  const closePop = () => { pop.hidden = true; document.removeEventListener('click', closePop); };
+  $('#exportBtn').onclick = (e) => {
+    e.stopPropagation();
+    if (pop.hidden) { pop.hidden = false; setTimeout(() => document.addEventListener('click', closePop), 0); } else closePop();
+  };
+  const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', doc: 'application/msword' };
+  pop.querySelectorAll('button').forEach((b) => b.onclick = async () => {
+    closePop();
+    const fmt = b.dataset.fmt;
+    if (fmt === 'pdf') { window.open(pdf, '_blank'); return; } // browser → Save as PDF
+    try { downloadFile(`${filename}.${fmt}`, await api.exportBlob(fmt === 'xlsx' ? xlsx : doc), MIME[fmt]); toast(`${fmt === 'doc' ? 'Word' : 'Excel'} exported`, 'ok'); }
+    catch (e) { toast('Export failed: ' + e.message, 'err'); }
+  });
+}
+
+// render a local image/PDF File to a downscaled PNG blob (so PDFs become embeddable images)
+async function fileToPreviewPng(file) {
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  let canvas;
+  if (isPdf) {
+    const lib = await getPdfjs();
+    const doc = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const page = await doc.getPage(1);
+    const scale = Math.min(2, 1500 / page.getViewport({ scale: 1 }).width);
+    const vp = page.getViewport({ scale });
+    canvas = document.createElement('canvas'); canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  } else {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('cannot read image')); img.src = url; });
+      const sc = Math.min(1, 1500 / Math.max(img.naturalWidth, img.naturalHeight));
+      canvas = document.createElement('canvas'); canvas.width = Math.round(img.naturalWidth * sc); canvas.height = Math.round(img.naturalHeight * sc);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    } finally { URL.revokeObjectURL(url); }
+  }
+  return await new Promise((res) => canvas.toBlob(res, 'image/png'));
+}
+
+async function addProofs(tankId, files) {
+  const grid = $('#proofGrid'); if (grid) grid.insertAdjacentHTML('afterbegin', `<div class="muted" id="proofUp" style="padding:10px">⏳ Uploading ${files.length} file(s)…</div>`);
+  let ok = 0;
+  for (const file of files) {
+    try {
+      let preview = null;
+      try { preview = await fileToPreviewPng(file); } catch { /* unsupported preview → store original only */ }
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      if (preview) fd.append('preview', preview, 'preview.png');
+      await api.uploadProof(tankId, fd); ok++;
+    } catch (e) { toast(`Proof "${file.name}" failed: ${e.message}`, 'err'); }
+  }
+  if (ok) toast(`${ok} delivery proof${ok > 1 ? 's' : ''} added`, 'ok');
+  loadProofs(tankId);
+}
+
+async function loadProofs(tankId) {
+  const grid = $('#proofGrid'); if (!grid) return;
+  try {
+    const { proofs } = await api.tankProofs(tankId);
+    if (!proofs.length) { grid.innerHTML = '<div class="muted" style="padding:10px">No delivery proofs yet — drop photos or PDFs above.</div>'; return; }
+    grid.innerHTML = proofs.map((f) => `
+      <div class="file-card">
+        <div class="thumb" data-open="${f.url}"><img src="${f.previewUrl}" alt="" loading="lazy"/></div>
+        <div class="fmeta"><span class="fn">${f.kind === 'pdf' ? '📄 ' : ''}${esc(f.filename)}</span>
+          <span style="display:flex;gap:8px;align-items:center"><a href="${f.url}" target="_blank">open</a>
+          <button class="icon-btn" data-delproof="${f.id}" title="Delete">🗑</button></span></div>
+      </div>`).join('');
+    grid.querySelectorAll('[data-open]').forEach((n) => n.style.cursor = 'pointer');
+    grid.querySelectorAll('.thumb[data-open]').forEach((n) => n.onclick = () => window.open(n.dataset.open, '_blank'));
+    grid.querySelectorAll('[data-delproof]').forEach((b) => b.onclick = async () => {
+      if (!confirm('Delete this delivery proof?')) return;
+      try { await api.deleteProof(b.dataset.delproof); toast('Proof deleted', 'ok'); loadProofs(tankId); } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
+    });
+  } catch (e) { grid.innerHTML = `<div class="muted" style="padding:10px">Failed to load proofs: ${esc(e.message)}</div>`; }
 }
 
 // ── Parts table ───────────────────────────────────────────────
@@ -628,6 +782,7 @@ function uploadFilesTo(tt) {
   body.querySelector('#pickFiles').onclick = () => body.querySelector('#fFiles').click();
   body.querySelector('#fFolder').onchange = (e) => doUpload([...e.target.files]);
   body.querySelector('#fFiles').onchange = (e) => doUpload([...e.target.files]);
+  body.querySelector('#dz').onclick = () => body.querySelector('#fFiles').click();
   wireDrag(body.querySelector('#dz'), doUpload, true);
 }
 
@@ -672,7 +827,7 @@ function renderNew() {
     const name = $('#nName').value.trim(); if (!name) return toast('Tank name required', 'err');
     const payload = { name, client: $('#nClient').value.trim(), tankTypeId: $('#nType').value, priority: $('#nPrio').value, startDate: $('#nStart').value || undefined, deliveryDate: $('#nDelivery').value || undefined, notes: $('#nNotes').value.trim() };
     $('#nCreate').disabled = true;
-    try { const t = await api.createTank(payload); await refresh(); go('parts', { tankFilter: t.id }); toast(`Created "${t.name}" — ${t.clonedParts} parts cloned`, 'ok'); }
+    try { const t = await api.createTank(payload); await refresh(); go('tankDetail', { tankId: t.id }); toast(`Created "${t.name}" — ${t.clonedParts} parts cloned`, 'ok'); }
     catch (e) { toast('Create failed: ' + e.message, 'err'); $('#nCreate').disabled = false; }
   });
 }
@@ -798,7 +953,7 @@ async function renderReports() {
     <div class="panel" style="margin-top:16px">
       <div class="row-between"><h3 style="margin:0">Recent activity (audit log)</h3><input id="actSearch" class="search" type="search" placeholder="Filter log…" style="width:200px"/></div>
       <div id="activityLog" style="margin-top:12px"><div class="loading">Loading…</div></div></div>`;
-  view().querySelectorAll('[data-tank]').forEach((n) => n.addEventListener('click', () => go('parts', { tankFilter: n.dataset.tank })));
+  view().querySelectorAll('[data-tank]').forEach((n) => n.addEventListener('click', () => go('tankDetail', { tankId: n.dataset.tank })));
   loadActivity();
   let t; $('#actSearch').oninput = (e) => { clearTimeout(t); const q = e.target.value; t = setTimeout(() => loadActivity(q), 250); };
 }

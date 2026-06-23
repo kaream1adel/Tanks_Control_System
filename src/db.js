@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS part_files (
   id TEXT PRIMARY KEY, tank_type_id TEXT NOT NULL, item_code TEXT NOT NULL,
   filename TEXT, kind TEXT, path TEXT, size INTEGER, created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS tank_files (
+  id TEXT PRIMARY KEY, tank_id TEXT NOT NULL, filename TEXT, kind TEXT,
+  path TEXT, preview TEXT DEFAULT '', size INTEGER, created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS tanks (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, client TEXT DEFAULT '',
   tank_type_id TEXT, tank_type_name TEXT DEFAULT '',
@@ -64,6 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_tank_date ON part_logs(tank_id, log_date);
 CREATE INDEX IF NOT EXISTS idx_logs_part ON part_logs(part_id);
 CREATE INDEX IF NOT EXISTS idx_events_at ON part_events(at);
 CREATE INDEX IF NOT EXISTS idx_events_part ON part_events(part_id);
+CREATE INDEX IF NOT EXISTS idx_tankfiles_tank ON tank_files(tank_id);
 CREATE INDEX IF NOT EXISTS idx_deliv_tank ON deliveries(tank_id);
 CREATE INDEX IF NOT EXISTS idx_deliv_date ON deliveries(delivered_date);
 CREATE INDEX IF NOT EXISTS idx_activity_at ON activity(at);

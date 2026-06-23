@@ -60,6 +60,12 @@ export const api = {
   version: () => req('GET', '/api/version'),
   share: () => req('GET', '/api/share'),
   exportType: async (id) => { const res = await fetch(`/api/tank-types/${id}/export.xlsx`); if (!res.ok) throw new Error('Export failed (' + res.status + ')'); return res.blob(); },
+  exportBlob: async (url) => { const res = await fetch(url); if (!res.ok) throw new Error('Export failed (' + res.status + ')'); return res.blob(); },
+
+  // delivery proofs (per tank)
+  tankProofs: (id) => req('GET', `/api/tanks/${id}/proofs`),
+  uploadProof: (id, form) => upload(`/api/tanks/${id}/proofs`, form),
+  deleteProof: (id) => req('DELETE', `/api/tank-proof/${id}`),
 
   // reports + follow-up
   reports: (weeks) => req('GET', `/api/reports${weeks ? `?weeks=${weeks}` : ''}`),

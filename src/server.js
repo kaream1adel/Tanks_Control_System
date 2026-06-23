@@ -603,6 +603,179 @@ app.get('/api/tank-types/:id/print', (req, res) => {
   res.send(typeReportHtml(tt, parts, 'print'));
 });
 
+// ── Per-TANK status report (live parts + delivery proofs) → Excel / Word / PDF ──
+// Columns: No, Item code, Description, Phase, Status, Qty as delivered/total
+// (green when fully delivered). After the table: the tank's delivery-proof images
+// (PDF proofs are stored with a rendered PNG preview, so everything embeds).
+const isDelivered = (p) => (p.qty_total || 0) > 0 && (p.delivered_qty || 0) >= (p.qty_total || 0);
+
+function tankProofImages(tankId) {
+  return all('SELECT * FROM tank_files WHERE tank_id=? ORDER BY created_at', [tankId]).map((f) => {
+    const rel = f.preview || f.path;
+    try {
+      const buf = fs.readFileSync(join(FILES_DIR, rel));
+      return { name: f.filename, buf, ext: (extname(rel).replace('.', '').toLowerCase() || 'png') };
+    } catch { return null; }
+  }).filter(Boolean);
+}
+
+function tankReportHtml(tank, parts, mode) {
+  const delivered = parts.filter(isDelivered).length;
+  const rows = parts.map((p) => {
+    const dq = p.delivered_qty || 0, qt = p.qty_total || 0;
+    const g = isDelivered(p) ? ' g' : '';
+    return `<tr><td class="c">${escHtml(p.no ?? '')}</td><td class="c code">${escHtml(p.item_code || '')}</td>`
+      + `<td class="desc" dir="auto">${escHtml(p.description || '')}</td><td class="c">${escHtml(p.phase || '')}</td>`
+      + `<td class="c">${escHtml(p.status || '')}</td><td class="c qty${g}">${dq}/${qt}</td></tr>`;
+  }).join('');
+  const imgs = tankProofImages(tank.id);
+  const proofs = imgs.length
+    ? `<h3>Delivery proofs — ${imgs.length}</h3><div class="proofs">`
+      + imgs.map((i) => `<figure><img src="data:image/${i.ext};base64,${i.buf.toString('base64')}"/><figcaption>${escHtml(i.name)}</figcaption></figure>`).join('')
+      + '</div>'
+    : '';
+  const printBits = mode === 'print'
+    ? `<div class="noprint" style="text-align:center;margin:0 0 14px"><button onclick="window.print()" style="padding:10px 22px;font-size:15px;border-radius:8px;border:1px solid #888;background:#f5a623;cursor:pointer">🖨 Print / Save as PDF</button></div>`
+      + `<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},400);});<\/script>`
+    : '';
+  return `<!doctype html><html><head><meta charset="utf-8"/><title>${escHtml(tank.name)} — Status</title>
+<style>
+ body{font-family:Calibri,Arial,sans-serif;color:#111;margin:24px;background:#fff;}
+ h1{font-size:22px;text-align:center;margin:0 0 2px;} h2{font-size:13px;text-align:center;color:#555;font-weight:normal;margin:0 0 16px;}
+ h3{font-size:15px;margin:22px 0 10px;border-top:2px solid #ccc;padding-top:14px;}
+ table{border-collapse:collapse;width:100%;} th,td{border:1px solid #000;padding:6px 9px;font-size:14px;vertical-align:middle;}
+ th{background:#f2f2f2;font-weight:bold;font-size:13px;text-align:center;}
+ td.c{text-align:center;} td.code{font-family:Consolas,monospace;} td.desc{line-height:1.35;}
+ td.qty{font-weight:700;font-variant-numeric:tabular-nums;} td.qty.g{color:#1a9c33;}
+ .proofs{display:flex;flex-wrap:wrap;gap:14px;} .proofs figure{margin:0;width:300px;}
+ .proofs img{width:100%;border:1px solid #ccc;border-radius:6px;}
+ .proofs figcaption{font-size:11px;color:#666;margin-top:4px;word-break:break-all;}
+ @media print{.noprint{display:none;} body{margin:0;} @page{margin:12mm;} .proofs figure{break-inside:avoid;}}
+</style></head><body>
+${printBits}<h1>${escHtml(tank.name)}</h1>
+<h2>${escHtml(tank.tank_type_name || '')} · Delivered: ${delivered} / ${parts.length} parts</h2>
+<table><thead><tr><th style="width:50px">No.</th><th style="width:130px">Item code</th><th>Description</th><th style="width:110px">Phase</th><th style="width:110px">Status</th><th style="width:70px">Qty</th></tr></thead>
+<tbody>${rows}</tbody></table>${proofs}</body></html>`;
+}
+
+app.get('/api/tanks/:id/report.doc', (req, res) => {
+  const t = get('SELECT * FROM tanks WHERE id=?', [req.params.id]);
+  if (!t) return res.status(404).json({ error: 'Tank not found' });
+  const parts = all('SELECT * FROM parts WHERE tank_id=? ORDER BY no', [t.id]);
+  res.setHeader('Content-Type', 'application/msword');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(t.name)}_status.doc"`);
+  res.send(tankReportHtml(t, parts, 'word'));
+});
+
+app.get('/api/tanks/:id/report-print', (req, res) => {
+  const t = get('SELECT * FROM tanks WHERE id=?', [req.params.id]);
+  if (!t) return res.status(404).send('Tank not found');
+  const parts = all('SELECT * FROM parts WHERE tank_id=? ORDER BY no', [t.id]);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(tankReportHtml(t, parts, 'print'));
+});
+
+app.get('/api/tanks/:id/report.xlsx', async (req, res) => {
+  const t = get('SELECT * FROM tanks WHERE id=?', [req.params.id]);
+  if (!t) return res.status(404).json({ error: 'Tank not found' });
+  const parts = all('SELECT * FROM parts WHERE tank_id=? ORDER BY no', [t.id]);
+  const delivered = parts.filter(isDelivered).length;
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Status');
+  ws.columns = [{ width: 6 }, { width: 20 }, { width: 60 }, { width: 16 }, { width: 16 }, { width: 10 }];
+  const thin = { style: 'thin', color: { argb: 'FF000000' } };
+  const box = { top: thin, left: thin, right: thin, bottom: thin };
+  ws.mergeCells('A1:F1'); const tc = ws.getCell('A1'); tc.value = t.name; tc.font = { bold: true, size: 16 }; tc.alignment = { horizontal: 'center' };
+  ws.mergeCells('A2:F2'); const sc = ws.getCell('A2'); sc.value = `${t.tank_type_name || ''}   ·   Delivered: ${delivered} / ${parts.length} parts`; sc.font = { size: 11, color: { argb: 'FF555555' } }; sc.alignment = { horizontal: 'center' };
+  const hr = ws.getRow(4); hr.values = ['No.', 'Item code', 'Description', 'Phase', 'Status', 'Qty'];
+  hr.eachCell((c) => { c.font = { bold: true }; c.alignment = { horizontal: 'center' }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }; c.border = box; });
+  let r = 5;
+  for (const p of parts) {
+    const dq = p.delivered_qty || 0, qt = p.qty_total || 0;
+    const row = ws.getRow(r);
+    row.values = [p.no ?? '', p.item_code || '', p.description || '', p.phase || '', p.status || '', `${dq}/${qt}`];
+    row.getCell(1).alignment = { horizontal: 'center' };
+    row.getCell(3).alignment = { horizontal: 'left', wrapText: true, readingOrder: 'rtl' };
+    const q = row.getCell(6); q.alignment = { horizontal: 'center' }; q.font = { bold: true, color: { argb: isDelivered(p) ? 'FF1A9C33' : 'FF000000' } };
+    row.eachCell((c) => { c.border = box; });
+    r++;
+  }
+  const imgs = tankProofImages(t.id);
+  if (imgs.length) {
+    let imgRow = r + 1;
+    const lbl = ws.getCell(`A${imgRow}`); lbl.value = `Delivery proofs — ${imgs.length}`; lbl.font = { bold: true, size: 13 };
+    imgRow += 1;
+    for (const im of imgs) {
+      try {
+        const { w, h } = pngSize(im.buf);
+        const scale = Math.min(520 / (w || 520), 360 / (h || 360), 1);
+        const dispW = Math.round((w || 520) * scale), dispH = Math.round((h || 360) * scale);
+        const imgId = wb.addImage({ buffer: im.buf, extension: im.ext === 'jpg' ? 'jpeg' : im.ext });
+        ws.addImage(imgId, { tl: { col: 0, row: imgRow - 1 }, ext: { width: dispW, height: dispH } });
+        imgRow += Math.ceil(dispH / 20) + 2;
+      } catch { /* skip bad image */ }
+    }
+  }
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(t.name)}_status.xlsx"`);
+  await wb.xlsx.write(res); res.end();
+});
+
+// ── Delivery proofs (per-tank photos / PDFs; stored with a PNG preview) ────────
+function tankProofsList(tankId) {
+  return all('SELECT id,filename,kind,size FROM tank_files WHERE tank_id=? ORDER BY created_at', [tankId])
+    .map((f) => ({ id: f.id, filename: f.filename, kind: f.kind, size: f.size, url: `/api/tank-proof/${f.id}`, previewUrl: `/api/tank-proof/${f.id}/preview` }));
+}
+app.get('/api/tanks/:id/proofs', (req, res) => {
+  if (!get('SELECT id FROM tanks WHERE id=?', [req.params.id])) return res.status(404).json({ error: 'Tank not found' });
+  res.json({ proofs: tankProofsList(req.params.id) });
+});
+app.post('/api/tanks/:id/proofs', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'preview', maxCount: 1 }]), (req, res) => {
+  const t = get('SELECT * FROM tanks WHERE id=?', [req.params.id]);
+  if (!t) return res.status(404).json({ error: 'Tank not found' });
+  const orig = req.files?.file?.[0];
+  if (!orig) return res.status(400).json({ error: 'No file' });
+  const prev = req.files?.preview?.[0];
+  const destDir = join(FILES_DIR, 'proofs', t.id);
+  fs.mkdirSync(destDir, { recursive: true });
+  const id = uid();
+  const name = Buffer.from(orig.originalname, 'latin1').toString('utf8');
+  const origRel = join('proofs', t.id, `${id}${extname(name).toLowerCase()}`);
+  fs.writeFileSync(join(FILES_DIR, origRel), orig.buffer);
+  let previewRel = '';
+  if (prev) { previewRel = join('proofs', t.id, `${id}_p.png`); fs.writeFileSync(join(FILES_DIR, previewRel), prev.buffer); }
+  run('INSERT INTO tank_files(id,tank_id,filename,kind,path,preview,size,created_at) VALUES (?,?,?,?,?,?,?,?)',
+    [id, t.id, name, fileKind(name), origRel, previewRel, orig.size, now()]);
+  logActivity('files', `Added delivery proof "${name}"`, { tank: t.name });
+  persist();
+  res.json({ ok: true, proofs: tankProofsList(t.id) });
+});
+app.get('/api/tank-proof/:id', (req, res) => {
+  const f = get('SELECT * FROM tank_files WHERE id=?', [req.params.id]);
+  if (!f) return res.status(404).send('Not found');
+  const abs = join(FILES_DIR, f.path);
+  if (!fs.existsSync(abs)) return res.status(404).send('Missing file');
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(f.filename)}"`);
+  res.sendFile(abs);
+});
+app.get('/api/tank-proof/:id/preview', (req, res) => {
+  const f = get('SELECT * FROM tank_files WHERE id=?', [req.params.id]);
+  if (!f) return res.status(404).send('Not found');
+  const abs = join(FILES_DIR, f.preview || f.path);
+  if (!fs.existsSync(abs)) return res.status(404).send('Missing file');
+  res.sendFile(abs);
+});
+app.delete('/api/tank-proof/:id', (req, res) => {
+  const f = get('SELECT * FROM tank_files WHERE id=?', [req.params.id]);
+  if (f) {
+    try { fs.unlinkSync(join(FILES_DIR, f.path)); } catch { /* ignore */ }
+    if (f.preview) { try { fs.unlinkSync(join(FILES_DIR, f.preview)); } catch { /* ignore */ } }
+    run('DELETE FROM tank_files WHERE id=?', [f.id]); persist();
+  }
+  res.json({ ok: true });
+});
+
 // import a parts list (xlsx/csv/docx/pdf) into a type (mode=append default, or replace)
 app.post('/api/tank-types/:id/import', upload.single('file'), async (req, res) => {
   const tt = get('SELECT * FROM tank_types WHERE id=?', [req.params.id]);
