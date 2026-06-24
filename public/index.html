@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Tank Control</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -16,17 +16,19 @@
         <div class="brand-text"><strong>Tank Control</strong><span>Local · Offline</span></div>
       </div>
       <nav class="nav" id="nav">
+        <button class="nav-item accent" data-route="new"><span class="ico">＋</span> New Tank</button>
+        <div class="nav-section">Workspace</div>
         <button class="nav-item active" data-route="overview"><span class="ico">◧</span> Overview</button>
         <button class="nav-item" data-route="tanks"><span class="ico">▥</span> Tanks</button>
         <button class="nav-item" data-route="parts"><span class="ico">▤</span> Parts</button>
-        <button class="nav-item" data-route="types"><span class="ico">📐</span> Tank Types</button>
-        <button class="nav-item" data-route="rework"><span class="ico">↻</span> Rework</button>
-        <button class="nav-item" data-route="followup"><span class="ico">📅</span> Follow-up</button>
+        <div class="nav-section">Insights</div>
         <button class="nav-item" data-route="reports"><span class="ico">📊</span> Reports</button>
+        <button class="nav-item" data-route="rework"><span class="ico">↻</span> Rework</button>
+        <div class="nav-section">Setup</div>
+        <button class="nav-item" data-route="types"><span class="ico">📐</span> Tank Types</button>
         <button class="nav-item" data-route="settings"><span class="ico">⚙</span> Settings</button>
         <button class="nav-item" data-route="share"><span class="ico">🔗</span> Share</button>
         <button class="nav-item" data-route="guide"><span class="ico">📖</span> Guide</button>
-        <button class="nav-item accent" data-route="new"><span class="ico">＋</span> New Tank</button>
       </nav>
       <div class="sidebar-foot">
         <button class="sync-btn" id="syncBtn"><span class="sync-ico">⟳</span> <span id="syncLabel">Refresh</span></button>

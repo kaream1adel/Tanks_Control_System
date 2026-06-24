@@ -9,6 +9,7 @@ const state = {
   tankFilter: 'all', statusFilter: 'all', phaseFilter: 'all', group: true, q: '',
   sort: { key: 'no', dir: 1 },
   followTankId: null, followTab: 'daily', followDate: new Date().toISOString().slice(0, 10), followPhase: '',
+  tankTab: 'parts',
 };
 
 const $ = (s) => document.querySelector(s);
@@ -64,7 +65,7 @@ function go(route, opts = {}) {
   state.route = route;
   if (opts.tankFilter) state.tankFilter = opts.tankFilter;
   if (opts.typeId) state.currentTypeId = opts.typeId;
-  if (opts.tankId) state.currentTankId = opts.tankId;
+  if (opts.tankId) { state.currentTankId = opts.tankId; state.tankTab = 'parts'; }
   setActive(); render();
 }
 function setActive() { document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.route === state.route)); }
@@ -185,69 +186,98 @@ function renderTankDetail() {
   $('#crumb').textContent = t.name || 'Tank';
   const parts = state.parts.filter((p) => p.tankId === t.id).slice().sort((a, b) => (a.no ?? 0) - (b.no ?? 0));
   const delivered = parts.filter((p) => (p.qtyTotal || 0) > 0 && (p.deliveredQty || 0) >= p.qtyTotal).length;
-  const cols = COLS; // single tank → no Tank column
 
   view().innerHTML = `
     <div class="row-between">
       <div><button class="btn ghost sm" id="back">← Tanks</button>
         <span style="font-size:18px;font-weight:600;margin-left:12px">${esc(t.name)}</span>
         <span class="muted" style="margin-left:8px">${esc(t.client || '')}${t.tankType ? ' · ' + esc(t.tankType) : ''}</span></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn ghost sm" id="followBtn">📅 Follow-up</button>
-        <div class="dropdown" id="exportDD">
-          <button class="btn ghost sm" id="exportBtn">⬇ Export ▾</button>
-          <div class="dropdown-pop" id="exportPop" hidden>
-            <button data-fmt="xlsx">📊 Excel (.xlsx)</button>
-            <button data-fmt="doc">📝 Word (.doc)</button>
-            <button data-fmt="pdf">📄 PDF (print)</button>
-          </div>
+      <div class="dropdown" id="exportDD">
+        <button class="btn ghost sm" id="exportBtn">⬇ Export ▾</button>
+        <div class="dropdown-pop" id="exportPop" hidden>
+          <button data-fmt="xlsx">📊 Excel (.xlsx)</button>
+          <button data-fmt="doc">📝 Word (.doc)</button>
+          <button data-fmt="pdf">📄 PDF (print)</button>
         </div>
       </div>
     </div>
-    <div class="grid kpis" style="margin-bottom:16px">
+    <div class="grid kpis" style="margin-bottom:14px">
       <div class="panel kpi amber"><div class="label">Completion</div><div class="value">${t.completion}<small>%</small></div><div style="margin-top:10px">${bar(t.completion, t.completion === 100)}</div></div>
       <div class="panel kpi"><div class="label">Parts done</div><div class="value">${t.partsDone}<small>/ ${t.partsTotal}</small></div></div>
       <div class="panel kpi"><div class="label">Delivered</div><div class="value" style="color:var(--green)">${delivered}<small>/ ${parts.length}</small></div></div>
       <div class="panel kpi"><div class="label">In rework</div><div class="value" style="color:var(--red)">${t.reworkParts || 0}</div></div>
     </div>
-    <div class="panel" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <div class="panel" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span class="muted">Status</span> ${selectHTML('instances', 'status', t.status, t.id, 'tank')}
       <span class="muted">Priority</span> ${selectHTML('instances', 'priority', t.priority, t.id, 'tank')}
       ${t.deliveryDate ? `<span class="muted">· Due ${esc(fmtDate(t.deliveryDate))}</span>` : ''}
     </div>
-    <div class="section-title">Parts — live status</div>
-    <div class="table-wrap"><table id="tdParts">
-      <thead><tr>${cols.map((c) => `<th>${c.label}</th>`).join('')}</tr></thead>
-      <tbody>${parts.map((p) => partRow(p, cols)).join('') || `<tr><td colspan="${cols.length}"><div class="empty"><div class="big">▤</div>No parts in this tank.</div></td></tr>`}</tbody>
-    </table></div>
-    ${assigneeDatalist()}
-    <div class="section-title" style="margin-top:24px">Delivery proofs</div>
-    <div class="panel">
-      <div class="dropzone" id="proofDz"><div class="big">📷</div>Click or drop photos / PDFs of delivery proofs here<div class="hint">Images embed directly; PDFs are saved with a preview image — both appear in the exported report</div></div>
-      <input type="file" id="proofIn" accept="image/*,application/pdf" multiple style="display:none"/>
-      <div class="viewer-grid" id="proofGrid" style="margin-top:14px"></div>
-    </div>`;
+    <div class="tabs" id="tankTabs">
+      <button class="tab ${state.tankTab === 'parts' ? 'on' : ''}" data-tab="parts">▤ Parts</button>
+      <button class="tab ${state.tankTab === 'followup' ? 'on' : ''}" data-tab="followup">📅 Follow-up</button>
+      <button class="tab ${state.tankTab === 'proofs' ? 'on' : ''}" data-tab="proofs">📷 Delivery proofs</button>
+    </div>
+    <div id="tankTabBody"></div>`;
 
   $('#back').onclick = () => go('tanks');
-  $('#followBtn').onclick = () => { state.followTankId = t.id; go('followup'); };
   // tank status/priority selects (in the meta panel only) → onTankEdit
   view().querySelectorAll('.panel > select.cell-edit').forEach((s) => s.addEventListener('change', onTankEdit));
-  // parts table editing
-  const tb = view().querySelector('#tdParts tbody');
-  tb.addEventListener('change', onPartEdit);
-  tb.querySelectorAll('[data-files]').forEach((b) => b.addEventListener('click', () => openPartFiles(b.dataset.files)));
-
   wireExportMenu({
     xlsx: `/api/tanks/${t.id}/report.xlsx`, doc: `/api/tanks/${t.id}/report.doc`,
     pdf: `/api/tanks/${t.id}/report-print`, filename: `${sanitizeName(t.name)}_status`,
   });
+  const tabs = view().querySelectorAll('#tankTabs .tab');
+  tabs.forEach((b) => b.onclick = () => {
+    state.tankTab = b.dataset.tab;
+    tabs.forEach((x) => x.classList.toggle('on', x.dataset.tab === state.tankTab));
+    renderTankTab(t, parts);
+  });
+  renderTankTab(t, parts);
+}
 
-  // delivery proofs
-  loadProofs(t.id);
-  const dz = $('#proofDz'), input = $('#proofIn');
-  dz.onclick = () => input.click();
-  input.onchange = () => { if (input.files.length) addProofs(t.id, [...input.files]); input.value = ''; };
-  wireDrag(dz, (files) => files.length && addProofs(t.id, files));
+// fill the active tank-page tab (Parts / Follow-up / Delivery proofs)
+function renderTankTab(t, parts) {
+  const box = $('#tankTabBody'); if (!box) return;
+  if (state.tankTab === 'followup') { renderTankFollowup(t); return; }
+  if (state.tankTab === 'proofs') {
+    box.innerHTML = `
+      <div class="panel">
+        <div class="dropzone" id="proofDz"><div class="big">📷</div>Click or drop photos / PDFs of delivery proofs here<div class="hint">Images embed directly; PDFs are saved with a preview image — both appear in the exported report</div></div>
+        <input type="file" id="proofIn" accept="image/*,application/pdf" multiple style="display:none"/>
+        <div class="viewer-grid" id="proofGrid" style="margin-top:14px"></div>
+      </div>`;
+    loadProofs(t.id);
+    const dz = $('#proofDz'), input = $('#proofIn');
+    dz.onclick = () => input.click();
+    input.onchange = () => { if (input.files.length) addProofs(t.id, [...input.files]); input.value = ''; };
+    wireDrag(dz, (files) => files.length && addProofs(t.id, files));
+    return;
+  }
+  // parts (default)
+  const cols = COLS;
+  box.innerHTML = `<div class="table-wrap"><table id="tdParts" class="cards">
+      <thead><tr>${cols.map((c) => `<th>${c.label}</th>`).join('')}</tr></thead>
+      <tbody>${parts.map((p) => partRow(p, cols)).join('') || `<tr><td colspan="${cols.length}"><div class="empty"><div class="big">▤</div>No parts in this tank.</div></td></tr>`}</tbody>
+    </table></div>${assigneeDatalist()}`;
+  const tb = box.querySelector('#tdParts tbody');
+  tb.addEventListener('change', onPartEdit);
+  tb.querySelectorAll('[data-files]').forEach((b) => b.addEventListener('click', () => openPartFiles(b.dataset.files)));
+}
+
+// per-tank Daily/Weekly worksheet, embedded in the Tank page (reuses renderDailyTab/renderWeeklyTab)
+function renderTankFollowup(t) {
+  const box = $('#tankTabBody'); if (!box) return;
+  state.followTankId = t.id;
+  box.innerHTML = `
+    <div class="toolbar">
+      ${state.followTab === 'daily' ? `<input id="fuDate" type="date" value="${state.followDate}"/>` : ''}
+      <div class="spacer"></div>
+      <div class="tabs"><button class="tab ${state.followTab === 'daily' ? 'on' : ''}" data-tab="daily">Daily follow-up</button><button class="tab ${state.followTab === 'weekly' ? 'on' : ''}" data-tab="weekly">Weekly rollup</button></div>
+    </div>
+    <div id="fuBody"><div class="loading">Loading…</div></div>`;
+  const dt = $('#fuDate'); if (dt) dt.onchange = (e) => { state.followDate = e.target.value; renderDailyTab(); };
+  box.querySelectorAll('.toolbar .tab[data-tab]').forEach((b) => b.onclick = () => { state.followTab = b.dataset.tab; renderTankFollowup(t); });
+  if (state.followTab === 'daily') renderDailyTab(); else renderWeeklyTab();
 }
 
 // generic Export ▾ dropdown wiring (Excel/Word download, PDF → print tab)
@@ -343,7 +373,7 @@ function renderParts() {
       <div class="spacer"></div>
       <div class="toggle"><button id="gTank" class="${state.group && state.tankFilter === 'all' ? 'on' : ''}">Group by tank</button><button id="gFlat" class="${!state.group || state.tankFilter !== 'all' ? 'on' : ''}">Flat</button></div>
     </div>
-    <div class="table-wrap"><table id="ptable"></table></div>
+    <div class="table-wrap"><table id="ptable" class="cards"></table></div>
     ${assigneeDatalist()}`;
   $('#fTank').value = state.tankFilter;
   $('#fTank').onchange = (e) => { state.tankFilter = e.target.value; renderParts(); };
@@ -399,16 +429,16 @@ function partRow(p, cols) {
   const tank = tankById(p.tankId);
   const fc = p.fileCount || 0;
   const cell = {
-    no: `<td class="num"><input class="cell-edit cell-num" type="number" min="0" value="${p.no ?? ''}" data-id="${p.id}" data-field="no"/></td>`,
-    partName: `<td><input class="cell-edit partname" dir="auto" type="text" value="${esc(p.description || '')}" placeholder="Part name" data-id="${p.id}" data-field="description"/><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" placeholder="Item code" data-id="${p.id}" data-field="itemCode"/></td>`,
-    tank: `<td class="muted">${esc(tank?.name || '—')}</td>`,
-    phase: `<td>${selectHTML('parts', 'phase', p.phase, p.id, 'part', true)}</td>`,
-    status: `<td>${selectHTML('parts', 'status', p.status, p.id, 'part')}</td>`,
-    qtyDone: `<td><div class="qbar"><input class="cell-edit cell-num" type="number" min="0" value="${p.qtyDone ?? 0}" data-id="${p.id}" data-field="qtyDone"/><span class="muted">/</span><input class="cell-edit cell-num" style="width:50px" type="number" min="0" value="${p.qtyTotal ?? 0}" data-id="${p.id}" data-field="qtyTotal"/>${bar(p.progress, p.progress === 100)}</div></td>`,
-    reworkCount: `<td><input class="cell-edit cell-num" type="number" min="0" value="${p.reworkCount ?? 0}" data-id="${p.id}" data-field="reworkCount"/></td>`,
-    reworkReason: `<td>${selectHTML('parts', 'reworkReason', p.reworkReason, p.id, 'part', true)}</td>`,
-    assignedTo: `<td><input class="cell-edit" type="text" list="assigneeList" autocomplete="off" value="${esc(p.assignedTo || '')}" placeholder="—" data-id="${p.id}" data-field="assignedTo"/></td>`,
-    files: `<td><button class="file-pill ${fc ? '' : 'none'}" data-files="${p.id}">📎 ${fc || '0'}</button></td>`,
+    no: `<td class="num" data-label="No"><input class="cell-edit cell-num" type="number" min="0" value="${p.no ?? ''}" data-id="${p.id}" data-field="no"/></td>`,
+    partName: `<td class="pn" data-label="Part"><input class="cell-edit partname" dir="auto" type="text" value="${esc(p.description || '')}" placeholder="Part name" data-id="${p.id}" data-field="description"/><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" placeholder="Item code" data-id="${p.id}" data-field="itemCode"/></td>`,
+    tank: `<td class="muted" data-label="Tank">${esc(tank?.name || '—')}</td>`,
+    phase: `<td data-label="Phase">${selectHTML('parts', 'phase', p.phase, p.id, 'part', true)}</td>`,
+    status: `<td data-label="Status">${selectHTML('parts', 'status', p.status, p.id, 'part')}</td>`,
+    qtyDone: `<td data-label="Qty"><div class="qbar"><input class="cell-edit cell-num" type="number" min="0" value="${p.qtyDone ?? 0}" data-id="${p.id}" data-field="qtyDone"/><span class="muted">/</span><input class="cell-edit cell-num" style="width:50px" type="number" min="0" value="${p.qtyTotal ?? 0}" data-id="${p.id}" data-field="qtyTotal"/>${bar(p.progress, p.progress === 100)}</div></td>`,
+    reworkCount: `<td data-label="Rework"><input class="cell-edit cell-num" type="number" min="0" value="${p.reworkCount ?? 0}" data-id="${p.id}" data-field="reworkCount"/></td>`,
+    reworkReason: `<td data-label="Reason">${selectHTML('parts', 'reworkReason', p.reworkReason, p.id, 'part', true)}</td>`,
+    assignedTo: `<td data-label="Assignee"><input class="cell-edit" type="text" list="assigneeList" autocomplete="off" value="${esc(p.assignedTo || '')}" placeholder="—" data-id="${p.id}" data-field="assignedTo"/></td>`,
+    files: `<td class="act" data-label="Files"><button class="file-pill ${fc ? '' : 'none'}" data-files="${p.id}">📎 ${fc || '0'}</button></td>`,
   };
   return `<tr data-row="${p.id}">${cols.map((c) => cell[c.key]).join('')}</tr>`;
 }
@@ -695,7 +725,7 @@ async function renderTypeDetail() {
       </div>
     </div>
     <div class="panel" style="margin-bottom:16px"><div class="cover" style="margin:0 0 8px"><span>Image / PDF coverage (matched by item code)</span><b>${cov}%</b></div>${bar(cov)}</div>
-    <div class="table-wrap"><table id="ttable">
+    <div class="table-wrap"><table id="ttable" class="cards">
       <thead><tr><th style="width:60px">No</th><th>Item code</th><th>Description</th><th style="width:80px">Qty</th><th style="width:150px">Default phase</th><th style="width:80px">Files</th><th style="width:50px"></th></tr></thead>
       <tbody>${tt.parts.map(templateRow).join('') || `<tr><td colspan="7"><div class="empty"><div class="big">🔩</div>No parts yet. Import a spreadsheet or add parts.</div></td></tr>`}</tbody>
     </table></div>`;
@@ -735,13 +765,13 @@ async function renderTypeDetail() {
 function templateRow(p) {
   const fc = p.files?.length || 0;
   return `<tr>
-    <td class="num muted">${p.no ?? ''}</td>
-    <td><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" data-id="${p.id}" data-field="itemCode"/></td>
-    <td><input class="cell-edit" dir="auto" type="text" value="${esc(p.description || '')}" data-id="${p.id}" data-field="description"/></td>
-    <td><input class="cell-edit cell-num" type="number" min="0" value="${p.qty ?? 1}" data-id="${p.id}" data-field="qty"/></td>
-    <td>${selectHTML('parts', 'phase', p.defaultPhase, p.id, 'tpl', true)}</td>
-    <td><button class="file-pill ${fc ? '' : 'none'}" data-files="${p.id}">📎 ${fc || '0'}</button></td>
-    <td><button class="icon-btn" data-delpart="${p.id}">🗑</button></td></tr>`;
+    <td class="num muted" data-label="No">${p.no ?? ''}</td>
+    <td class="pn" data-label="Item code"><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" data-id="${p.id}" data-field="itemCode"/></td>
+    <td class="pn" data-label="Description"><input class="cell-edit" dir="auto" type="text" value="${esc(p.description || '')}" data-id="${p.id}" data-field="description"/></td>
+    <td data-label="Qty"><input class="cell-edit cell-num" type="number" min="0" value="${p.qty ?? 1}" data-id="${p.id}" data-field="qty"/></td>
+    <td data-label="Default phase">${selectHTML('parts', 'phase', p.defaultPhase, p.id, 'tpl', true)}</td>
+    <td data-label="Files"><button class="file-pill ${fc ? '' : 'none'}" data-files="${p.id}">📎 ${fc || '0'}</button></td>
+    <td class="act" data-label=""><button class="icon-btn" data-delpart="${p.id}">🗑</button></td></tr>`;
 }
 async function onTemplateEdit(e) {
   const t = e.target; if (!t.dataset.id || !t.dataset.field) return;
@@ -897,17 +927,17 @@ async function renderDailyTab() {
   const rows = d.parts.map((p) => {
     const remaining = (p.qtyTotal || 0) - (p.deliveredQty || 0);
     return `<tr>
-    <td class="num muted">${p.no ?? ''}</td>
-    <td><div class="partname">${esc(p.partName || p.itemCode)}</div><div class="partcode">${esc(p.itemCode || '')}</div></td>
-    <td>${selectHTML('parts', 'phase', p.phase, p.partId, 'part', true)}</td>
-    <td>${selectHTML('parts', 'status', p.status, p.partId, 'part')}</td>
-    <td><div class="qbar"><span class="muted" style="min-width:42px">${p.qtyDone}/${p.qtyTotal}</span>${bar(p.progress, p.progress === 100)}</div></td>
-    <td class="num muted" title="delivered / total">${p.deliveredQty || 0}/${p.qtyTotal || 0}</td>
-    <td><input class="cell-edit cell-num fu-deliv" type="number" min="0" value="${p.deliveredToday ?? ''}" placeholder="0" data-part="${p.partId}" title="Delivered this day · ${remaining} remaining"/></td>
-    <td><input class="cell-edit fu-note" type="text" value="${esc(p.log?.note || '')}" placeholder="note…" data-part="${p.partId}"/></td>
+    <td class="num muted" data-label="No">${p.no ?? ''}</td>
+    <td class="pn" data-label="Part"><div class="partname">${esc(p.partName || p.itemCode)}</div><div class="partcode">${esc(p.itemCode || '')}</div></td>
+    <td data-label="Phase">${selectHTML('parts', 'phase', p.phase, p.partId, 'part', true)}</td>
+    <td data-label="Status">${selectHTML('parts', 'status', p.status, p.partId, 'part')}</td>
+    <td data-label="Progress"><div class="qbar"><span class="muted" style="min-width:42px">${p.qtyDone}/${p.qtyTotal}</span>${bar(p.progress, p.progress === 100)}</div></td>
+    <td class="num muted" data-label="Delivered" title="delivered / total">${p.deliveredQty || 0}/${p.qtyTotal || 0}</td>
+    <td data-label="Deliver qty"><input class="cell-edit cell-num fu-deliv" type="number" min="0" value="${p.deliveredToday ?? ''}" placeholder="0" data-part="${p.partId}" title="Delivered this day · ${remaining} remaining"/></td>
+    <td data-label="Note"><input class="cell-edit fu-note" type="text" value="${esc(p.log?.note || '')}" placeholder="note…" data-part="${p.partId}"/></td>
   </tr>`; }).join('');
   box.innerHTML = head + `
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="cards">
       <thead><tr><th>No</th><th>Part</th><th>Phase</th><th>Status</th><th>Progress</th><th title="delivered / total">Delivered</th><th>Deliver qty</th><th>Note</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     ${assigneeDatalist()}`;

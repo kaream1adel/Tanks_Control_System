@@ -35,8 +35,10 @@ button { cursor: pointer; }
 .nav-item:hover { background: var(--panel); color: var(--text); }
 .nav-item.active { background: var(--panel-2); color: var(--text); border-color: var(--line-2); }
 .nav-item.active .ico { color: var(--amber); }
-.nav-item.accent { color: var(--amber); margin-top: 10px; border: 1px dashed rgba(245,166,35,0.35); }
+.nav-item.accent { color: var(--amber); margin: 2px 0 4px; border: 1px dashed rgba(245,166,35,0.35); }
 .nav-item.accent:hover { background: var(--amber-dim); }
+.nav-section { font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted-2); font-weight: 700; padding: 14px 12px 5px; user-select: none; }
+.nav-section:first-child { padding-top: 4px; }
 .sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
 .sync-btn { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 9px; color: var(--text); font-weight: 500; }
 .sync-btn:hover { border-color: var(--amber); color: var(--amber); }
@@ -303,10 +305,33 @@ td.error { box-shadow: inset 3px 0 0 var(--red); }
   .statrow .name { width: 96px !important; font-size: 12px; }
   .row-between { gap: 8px; margin-bottom: 12px; }
 
-  /* ── Tables: stay scrollable, but tighter and momentum-scrolled ── */
-  table { min-width: 760px; }
+  /* ── Plain tables stay scrollable; tighter padding ── */
+  table { min-width: 720px; }
   thead th { padding: 9px 10px; }
   tbody td { padding: 8px 10px; }
+
+  /* ── Marked data tables (.cards) become STACKED CARDS on phones — no
+        horizontal scroll, each field labeled, big touch controls ── */
+  table.cards { min-width: 0; width: 100%; }
+  table.cards thead { display: none; }
+  table.cards, table.cards tbody { display: block; }
+  table.cards tr { display: block; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 4px 12px; margin-bottom: 10px; }
+  table.cards tr.group-row { background: transparent; border: none; padding: 16px 2px 4px; margin: 0; color: var(--amber); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  table.cards tr.group-row td { display: block; padding: 0; }
+  table.cards td { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: none; padding: 9px 0; min-height: 42px; }
+  table.cards tr td + td { border-top: 1px solid var(--line); }
+  table.cards td::before { content: attr(data-label); color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; flex: 0 0 auto; }
+  table.cards td.pn { display: block; padding-top: 11px; }
+  table.cards td.pn::before { display: block; margin-bottom: 6px; }
+  table.cards .cell-edit { width: auto; flex: 1 1 auto; min-height: 40px; text-align: right; }
+  table.cards td.pn .cell-edit { width: 100%; text-align: start; margin-bottom: 6px; }
+  table.cards td.num { text-align: left; }
+  table.cards .qbar { flex: 1 1 auto; justify-content: flex-end; }
+  table.cards .qbar .bar { display: none; }
+  table.cards td.act { justify-content: flex-end; }
+  table.cards td.act::before, table.cards td[colspan]::before { content: ""; }
+  table.cards td[colspan] { display: block; }
+  table.cards .empty { padding: 30px 10px; }
 
   /* ── Toolbars / filters fill the row ── */
   .toolbar { gap: 8px; }
@@ -321,8 +346,23 @@ td.error { box-shadow: inset 3px 0 0 var(--red); }
   .viewer-big { height: 64dvh; }
   .crop-stage { max-height: 60dvh; -webkit-overflow-scrolling: touch; }
 
+  /* iOS: ≥16px form fonts stop the browser auto-zooming on focus */
+  input, select, textarea, .cell-edit { font-size: 16px; }
+
+  /* bigger touch targets */
+  .btn.sm { padding: 9px 14px; }
+  .icon-btn { padding: 9px 12px; }
+  .file-pill { padding: 6px 11px; }
+  .tab { padding: 10px 14px; }
+  .toggle button { padding: 11px 14px; }
+
+  /* safe-area insets for notched phones */
+  .topbar { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+  .view { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  .sidebar { padding-top: max(16px, env(safe-area-inset-top)); padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+
   /* misc */
-  .toast-wrap { left: 12px; right: 12px; bottom: 12px; }
+  .toast-wrap { left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
   .toast { max-width: none; }
   .guide-table td:first-child { width: 100px; }
 }
