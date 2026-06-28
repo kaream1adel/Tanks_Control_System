@@ -20,7 +20,7 @@
         <div class="nav-section">Workspace</div>
         <button class="nav-item active" data-route="overview"><span class="ico">◧</span> Overview</button>
         <button class="nav-item" data-route="tanks"><span class="ico">▥</span> Tanks</button>
-        <button class="nav-item" data-route="parts"><span class="ico">▤</span> Parts</button>
+        <button class="nav-item" data-route="parts"><span class="ico">▤</span> All Parts</button>
         <div class="nav-section">Insights</div>
         <button class="nav-item" data-route="reports"><span class="ico">📊</span> Reports</button>
         <button class="nav-item" data-route="rework"><span class="ico">↻</span> Rework</button>
@@ -32,7 +32,7 @@
       </nav>
       <div class="sidebar-foot">
         <button class="sync-btn" id="syncBtn"><span class="sync-ico">⟳</span> <span id="syncLabel">Refresh</span></button>
-        <div class="sync-meta" id="syncMeta">local database</div>
+        <div class="sync-meta" id="syncMeta">local database<span id="verBadgeFoot"></span></div>
       </div>
     </aside>
 
@@ -42,6 +42,8 @@
         <div class="crumb" id="crumb">Overview</div>
         <div class="topbar-right">
           <input class="search" id="globalSearch" type="search" placeholder="Search parts, tanks…" />
+          <span class="access-badge" id="accessBadge"></span>
+          <span class="ver-badge" id="verBadge" title="App version"></span>
           <div class="conn ok" id="conn"><span class="dot"></span><span id="connText">Local DB</span></div>
         </div>
       </header>

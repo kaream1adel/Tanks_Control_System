@@ -9,12 +9,28 @@ const state = {
   tankFilter: 'all', statusFilter: 'all', phaseFilter: 'all', group: true, q: '',
   sort: { key: 'no', dir: 1 },
   followTankId: null, followTab: 'daily', followDate: new Date().toISOString().slice(0, 10), followPhase: '',
-  tankTab: 'parts',
+  tankTab: 'parts', access: 'full',
 };
 
 const $ = (s) => document.querySelector(s);
 const view = () => $('#view');
 const tankById = (id) => state.tanks.find((t) => t.id === id);
+
+// Position a fixed-position popover (e.g. .dropdown-pop) under its trigger button,
+// clamped to the viewport so it's never cropped — by either screen edge, or by a
+// scrolling ancestor like .view (overflow:auto clips absolutely-positioned children,
+// which is what used to crop the Export menu's left side on narrow screens).
+function positionDropdown(btn, pop) {
+  const margin = 8;
+  const r = btn.getBoundingClientRect();
+  pop.style.left = '0px'; pop.style.top = '0px'; // measure at a known position first
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  let left = r.right - pw; // right-align under the button by default
+  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
+  let top = r.bottom + 6;
+  if (top + ph > window.innerHeight - margin) top = Math.max(margin, r.top - ph - 6); // flip above if no room below
+  pop.style.left = left + 'px'; pop.style.top = top + 'px';
+}
 
 // ── Boot ──────────────────────────────────────────────────────
 async function boot() {
@@ -42,7 +58,19 @@ function setData(d) {
   if (!d) return;
   Object.assign(state, { tankTypes: d.tankTypes || [], tanks: d.tanks || [], parts: d.parts || [], options: d.options || { parts: {}, instances: {}, people: {} } });
   if (!state.followTankId || !state.tanks.some((t) => t.id === state.followTankId)) state.followTankId = state.tanks[0]?.id || null;
+  if (d.appVersion) {
+    const vb = document.getElementById('verBadge'); if (vb) vb.textContent = 'v' + d.appVersion;
+    const vf = document.getElementById('verBadgeFoot'); if (vf) vf.textContent = ' · v' + d.appVersion;
+  }
+  if (d.access) {
+    state.access = d.access; api.setAccess(d.access);
+    document.getElementById('app')?.classList.toggle('view-only', d.access === 'view');
+    const ab = document.getElementById('accessBadge'); if (ab) ab.textContent = d.access === 'view' ? '👁 View only' : '';
+  }
 }
+const canEdit = () => state.access !== 'view';
+// view-only: show a clean notice and revert the just-touched control (re-render)
+function denyEdit() { toast('🔒 View-only access — editing is disabled', 'err'); render(); }
 
 // ── Chrome ────────────────────────────────────────────────────
 function wireChrome() {
@@ -71,7 +99,7 @@ function go(route, opts = {}) {
 function setActive() { document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.route === state.route)); }
 
 function render() {
-  const crumbs = { overview: 'Overview', tanks: 'Tanks', parts: 'Parts', types: 'Tank Types', rework: 'Rework Analytics', followup: 'Follow-up', reports: 'Reports', settings: 'Settings', share: 'Share access', guide: 'Guide & Data Safety', new: 'New Tank', typeDetail: 'Tank Type', tankDetail: 'Tank' };
+  const crumbs = { overview: 'Overview', tanks: 'Tanks', parts: 'All Parts', types: 'Tank Types', rework: 'Rework Analytics', followup: 'Follow-up', reports: 'Reports', settings: 'Settings', share: 'Share access', guide: 'Guide & Data Safety', new: 'New Tank', typeDetail: 'Tank Type', tankDetail: 'Tank' };
   $('#crumb').textContent = crumbs[state.route] || '';
   ({ overview: renderOverview, tanks: renderTanks, parts: renderParts, types: renderTypes, typeDetail: renderTypeDetail, tankDetail: renderTankDetail, rework: renderRework, followup: renderFollowup, reports: renderReports, settings: renderSettings, share: renderShare, guide: renderGuide, new: renderNew }[state.route] || renderOverview)();
 }
@@ -282,11 +310,21 @@ function renderTankFollowup(t) {
 
 // generic Export ▾ dropdown wiring (Excel/Word download, PDF → print tab)
 function wireExportMenu({ xlsx, doc, pdf, filename }) {
-  const pop = $('#exportPop'); if (!pop) return;
-  const closePop = () => { pop.hidden = true; document.removeEventListener('click', closePop); };
-  $('#exportBtn').onclick = (e) => {
+  const pop = $('#exportPop'); const btn = $('#exportBtn'); if (!pop || !btn) return;
+  const closePop = () => {
+    pop.hidden = true;
+    document.removeEventListener('click', closePop);
+    window.removeEventListener('resize', closePop);
+    view().removeEventListener('scroll', closePop);
+  };
+  btn.onclick = (e) => {
     e.stopPropagation();
-    if (pop.hidden) { pop.hidden = false; setTimeout(() => document.addEventListener('click', closePop), 0); } else closePop();
+    if (pop.hidden) {
+      pop.hidden = false; positionDropdown(btn, pop);
+      setTimeout(() => document.addEventListener('click', closePop), 0);
+      window.addEventListener('resize', closePop);
+      view().addEventListener('scroll', closePop, { passive: true });
+    } else closePop();
   };
   const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', doc: 'application/msword' };
   pop.querySelectorAll('button').forEach((b) => b.onclick = async () => {
@@ -444,6 +482,7 @@ function partRow(p, cols) {
 }
 async function onPartEdit(e) {
   const t = e.target; if (!t.dataset.id || !t.dataset.field) return;
+  if (!canEdit()) return denyEdit();
   const id = t.dataset.id, field = t.dataset.field;
   const value = t.type === 'number' ? (t.value === '' ? null : Number(t.value)) : t.value;
   const td = t.closest('td'); td.classList.remove('saved', 'error'); td.classList.add('saving');
@@ -473,6 +512,7 @@ function assigneeDatalist() {
   return `<datalist id="assigneeList">${(state.options.people?.assignee || []).map((o) => `<option value="${esc(o.name)}"></option>`).join('')}</datalist>`;
 }
 async function onTankEdit(e) {
+  if (!canEdit()) return denyEdit();
   const t = e.target; const id = t.dataset.id, field = t.dataset.field;
   try { const fresh = await api.updateTank(id, { [field]: t.value }); const i = state.tanks.findIndex((x) => x.id === id); if (i >= 0) state.tanks[i] = fresh; toast('Tank updated', 'ok'); }
   catch (err) { toast('Save failed: ' + err.message, 'err'); }
@@ -490,8 +530,8 @@ async function openPartFiles(partId) {
 // browser download managers (IDM etc.) can't hijack the request — they display
 // inline instead of triggering a download.
 function openFileViewer(files, title, subtitle, ctx) {
-  const canCrop = !!ctx;
-  const canAdd = !!(ctx && ctx.typeId);
+  const canCrop = !!ctx && canEdit();
+  const canAdd = !!(ctx && ctx.typeId) && canEdit();
   const objectUrls = [];
   async function reopenWith() {
     try { await refresh(); } catch { /* ignore */ }
@@ -733,23 +773,9 @@ async function renderTypeDetail() {
   $('#addPart').onclick = () => addTemplatePart(tt);
   $('#impBtn').onclick = () => importToType(tt);
   $('#filesBtn').onclick = () => uploadFilesTo(tt);
-  const pop = $('#exportPop');
-  const closePop = () => { if (pop) { pop.hidden = true; document.removeEventListener('click', closePop); } };
-  $('#exportBtn').onclick = (e) => {
-    e.stopPropagation();
-    if (pop.hidden) { pop.hidden = false; setTimeout(() => document.addEventListener('click', closePop), 0); } else closePop();
-  };
-  const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', doc: 'application/msword' };
-  pop.querySelectorAll('button').forEach((b) => b.onclick = async () => {
-    closePop();
-    const fmt = b.dataset.fmt;
-    if (fmt === 'pdf') { window.open(`/api/tank-types/${tt.id}/print`, '_blank'); return; } // browser → Save as PDF
-    try {
-      const res = await fetch(`/api/tank-types/${tt.id}/export.${fmt}`);
-      if (!res.ok) throw new Error('(' + res.status + ')');
-      downloadFile(`${sanitizeName(tt.name)}_parts.${fmt}`, await res.blob(), MIME[fmt]);
-      toast(`${fmt === 'doc' ? 'Word' : 'Excel'} exported`, 'ok');
-    } catch (e) { toast('Export failed: ' + e.message, 'err'); }
+  wireExportMenu({
+    xlsx: `/api/tank-types/${tt.id}/export.xlsx`, doc: `/api/tank-types/${tt.id}/export.doc`,
+    pdf: `/api/tank-types/${tt.id}/print`, filename: `${sanitizeName(tt.name)}_parts`,
   });
   const tbody = view().querySelector('#ttable tbody');
   tbody.addEventListener('change', onTemplateEdit);
@@ -775,6 +801,7 @@ function templateRow(p) {
 }
 async function onTemplateEdit(e) {
   const t = e.target; if (!t.dataset.id || !t.dataset.field) return;
+  if (!canEdit()) return denyEdit();
   const id = t.dataset.id, field = t.dataset.field;
   const value = t.type === 'number' ? (t.value === '' ? null : Number(t.value)) : t.value;
   const td = t.closest('td'); td.classList.remove('saved', 'error'); td.classList.add('saving');
@@ -1168,50 +1195,59 @@ async function renderShare() {
   let s; try { s = await api.share(); } catch (e) { view().innerHTML = `<div class="banner warn">${esc(e.message)}</div>`; return; }
   if (state.route !== 'share') return; // user navigated away during fetch
   const t = s.tunnel || { status: 'off' };
+  const L = s.links || {};
   const pw = s.password || {};
-  const pwLine = pw.auto
-    ? `Password: <b style="font-size:16px">${esc(pw.auto)}</b> <span class="muted">(auto — change it in the launcher's <code>APP_PASSWORD</code>)</span>`
-    : pw.set ? 'Use <b>the password</b> you set in the launcher.' : '<span style="color:var(--red)">⚠ No password set — anyone with the link can open it. Set <code>APP_PASSWORD</code> in the launcher.</span>';
 
-  let linkBlock;
-  if (t.status === 'on' && t.url) {
-    linkBlock = `
-      <div class="share-link"><input id="shareUrl" readonly value="${esc(t.url)}"/><button class="btn sm" id="copyUrl">Copy</button></div>
-      <div class="share-qr">${s.qr || ''}</div>
-      <p class="guide-p" style="margin-top:14px">Send people <b>this link + the password</b> below. They open it in any browser, on any network — no install.</p>
-      <p class="guide-p">${pwLine}</p>
-      <div style="margin-top:10px"><button class="btn ghost sm" id="tunToggle">⏻ Turn off public link</button></div>
-      <div class="hint" style="margin-top:8px">This free link changes if you restart the app — reopen this page for the current one. For a permanent link, see <code>DEPLOY.md</code>.</div>`;
+  const on = t.status === 'on' && t.url;
+  const accessCard = (icon, title, sub, link) => `
+    <div class="panel access-card">
+      <h3>${icon} ${title}</h3>
+      <p class="guide-p" style="margin-top:-4px">${sub}</p>
+      <div class="share-link"><input readonly value="${esc(link?.url || '')}"/><button class="btn sm" data-copy="${esc(link?.url || '')}">Copy</button></div>
+      <div class="share-qr">${link?.qr || '<div class="muted" style="padding:20px">QR unavailable</div>'}</div>
+    </div>`;
+  const cards = `
+    <div class="section-title">Share access — send a link or scan the QR</div>
+    <div class="hint" style="margin:-2px 0 12px">${on
+      ? 'These are <b>public</b> links — reachable from any network. Each one signs the person in automatically at its level, no password to type.'
+      : 'These work on the <b>same Wi-Fi</b> as this PC. Turn on the public link below to share from anywhere.'}</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      ${accessCard('🌐', 'Full access — can edit', 'View <b>and edit</b> everything. Give to operators / your team.', L.full)}
+      ${accessCard('👁', 'View only — read-only', 'View progress only — <b>cannot</b> edit, add, delete or save.', L.view)}
+    </div>`;
+
+  let tunnelPanel;
+  if (on) {
+    tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="row-between">
+        <div><b>🌐 Public link is ON</b> <span class="muted">— anyone, any network</span></div>
+        <button class="btn ghost sm" id="tunToggle">⏻ Turn off</button></div>
+      <div class="hint" style="margin-top:6px">${pw.auto ? `A full-access password is also set: <b>${esc(pw.auto)}</b>. ` : ''}The public link changes if you restart the app — reopen this page for the current QR.</div></div>`;
   } else if (t.status === 'downloading' || t.status === 'starting') {
-    linkBlock = `<div class="loading">${t.status === 'downloading' ? 'Setting up the tunnel (downloading helper, one-time ~50MB)…' : 'Connecting your public link…'}</div>
-      <div style="margin-top:10px"><button class="btn ghost sm" id="tunToggle">Cancel</button></div>`;
+    tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="loading">${t.status === 'downloading' ? 'Setting up the tunnel (downloading helper, one-time ~50MB)…' : 'Connecting your public link…'}</div>
+      <div style="margin-top:10px"><button class="btn ghost sm" id="tunToggle">Cancel</button></div></div>`;
   } else if (t.status === 'error') {
-    linkBlock = `<div class="banner warn">Tunnel error: ${esc(t.error || 'unknown')}. Check this machine's internet.</div>
-      <button class="btn" id="tunToggle">🌐 Try again</button>`;
+    tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="banner warn">Tunnel error: ${esc(t.error || 'unknown')}. Check this machine's internet.</div>
+      <button class="btn" id="tunToggle">🌐 Try again</button></div>`;
   } else {
-    linkBlock = `<p class="guide-p">The public link is <b>off</b>. Turn it on to reach <b>this machine's</b> app from anywhere (any network) through a secure link.</p>
-      <button class="btn" id="tunToggle">🌐 Enable public access</button>
-      <div class="hint" style="margin-top:8px">First time downloads a small helper (~50&nbsp;MB), once. A password is set automatically so the link is never open.</div>`;
+    tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="row-between">
+        <div><b>🌐 Public link is OFF</b> <span class="muted">— the links above only work on this Wi-Fi</span></div>
+        <button class="btn" id="tunToggle">🌐 Enable public access</button></div>
+      <div class="hint" style="margin-top:6px">Turn it on to share from anywhere. First time downloads a small helper (~50&nbsp;MB), once; a password is set automatically so the base link is never open.</div></div>`;
   }
 
   view().innerHTML = `
-    <div class="grid" style="grid-template-columns:1.2fr 1fr">
-      <div class="panel"><h3>🌐 Public link — anyone, any network</h3>${linkBlock}</div>
-      <div class="panel"><h3>On the same Wi-Fi</h3>
-        ${s.lan && s.lan.length ? s.lan.map((u) => `<div class="share-link"><input readonly value="${esc(u)}"/></div>`).join('') : '<div class="muted">No network address found.</div>'}
-        <p class="guide-p" style="margin-top:12px">People on the factory Wi-Fi can use these directly. ${pw.set ? 'Password still required.' : ''}</p>
-      </div>
-    </div>
-    <div class="panel" style="margin-top:16px"><h3>How to give someone access (minimal steps)</h3>
+    ${cards}
+    ${tunnelPanel}
+    <div class="panel" style="margin-top:16px"><h3>How sharing works</h3>
       <ol class="guide-ol">
-        <li>Make sure this host PC is running the app (it must stay on).</li>
-        <li>Copy the <b>public link</b> above and send it (WhatsApp/email) <b>with the password</b>.</li>
-        <li>They open the link → type the password → they're in. Edits sync to everyone within ~3 seconds.</li>
+        <li>Keep this host PC running the app (it holds the data).</li>
+        <li>Send the <b>Full access</b> link/QR to people who update work, and the <b>View only</b> link/QR to people who should just watch progress.</li>
+        <li>They open the link (or scan the QR) → they're straight in at the right level. Edits sync to everyone within ~3 seconds.</li>
       </ol>
-      <div class="hint">Everyone shares this one app, so there's a single database — no copies, no data loss. Your data never leaves this PC; the link is just a secure doorway to it.</div>
+      <div class="hint">View-only is enforced on the server: a view link genuinely cannot change data, through any screen. Everyone shares one database on this PC — no copies, no drift.</div>
     </div>`;
-  const cp = $('#copyUrl');
-  if (cp) cp.onclick = () => { navigator.clipboard?.writeText(t.url); toast('Link copied', 'ok'); };
+
+  view().querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); toast('Link copied', 'ok'); });
   const tg = $('#tunToggle');
   if (tg) tg.onclick = async () => {
     const turningOn = t.status === 'off' || t.status === 'error';

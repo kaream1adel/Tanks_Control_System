@@ -12,7 +12,9 @@ import { backupNow } from './backup.js';
 import { startTunnel, stopTunnel, tunnelInfo } from './tunnel.js';
 import ExcelJS from 'exceljs';
 import QRCode from 'qrcode';
-import { PUBLIC_DIR, FILES_DIR, DATA_DIR } from './paths.js';
+import { PUBLIC_DIR, FILES_DIR, DATA_DIR, ROOT } from './paths.js';
+
+const APP_VERSION = JSON.parse(fs.readFileSync(join(ROOT, 'package.json'), 'utf8')).version || '0.0.0';
 
 const PORT = process.env.PORT || 4200;
 const uid = () => crypto.randomUUID();
@@ -154,16 +156,29 @@ function autoPassword() {
   fs.writeFileSync(f, pw);
   return pw;
 }
-// Dynamic password gate. The active password can be turned on AT RUNTIME — when
-// the public tunnel is enabled from the Share page we never expose the app
-// unprotected, so we auto-generate a password then (and drop it when it's off).
-const gate = { pw: '', auth: '', auto: false };
-function setGatePw(pw, isAuto = false) {
-  gate.pw = pw || '';
-  gate.auto = !!(pw && isAuto);
-  gate.auth = pw ? crypto.createHash('sha256').update('tankctl:' + pw).digest('hex').slice(0, 32) : '';
+// ── Access levels: FULL (edit) vs VIEW (read-only) ───────────────────────────
+// Two shareable secret tokens live in data/access-tokens.json. Opening a link
+// that carries a token (the Share-page QR/links) sets a session cookie at that
+// level. The full password (APP_PASSWORD / tunnel auto-password) also logs in at
+// FULL. The cookie stores only a hash. A VIEW session is enforced read-only by
+// the middleware below — it can never reach a write endpoint, whatever the client.
+function loadAccessTokens() {
+  const f = join(DATA_DIR, 'access-tokens.json');
+  try { const t = JSON.parse(fs.readFileSync(f, 'utf8')); if (t.full && t.view && t.secret) return t; } catch { /* regenerate */ }
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const t = { full: crypto.randomBytes(12).toString('hex'), view: crypto.randomBytes(12).toString('hex'), secret: crypto.randomBytes(16).toString('hex') };
+  fs.writeFileSync(f, JSON.stringify(t));
+  return t;
 }
-const authCookie = () => `tc_auth=${gate.auth}; HttpOnly; SameSite=Lax; Max-Age=2592000; Path=/`;
+const TOKENS = loadAccessTokens();
+const levelHash = (level) => crypto.createHash('sha256').update(`tankctl:${level}:${TOKENS.secret}`).digest('hex').slice(0, 32);
+const HASH = { full: levelHash('full'), view: levelHash('view') };
+const accessCookie = (level) => `tc_acc=${HASH[level]}; HttpOnly; SameSite=Lax; Max-Age=2592000; Path=/`;
+
+// Dynamic password gate (FULL access via typed password). Protection is ON when a
+// password is set (APP_PASSWORD, or the auto one created when the tunnel goes up).
+const gate = { pw: '', auto: false };
+function setGatePw(pw, isAuto = false) { gate.pw = pw || ''; gate.auto = !!(pw && isAuto); }
 function ensureGatePassword() { // protect the link when the tunnel is switched on
   if (gate.pw) return false;
   setGatePw(process.env.APP_PASSWORD || autoPassword(), !process.env.APP_PASSWORD);
@@ -173,16 +188,44 @@ if (process.env.APP_PASSWORD) setGatePw(process.env.APP_PASSWORD);
 else if (TUNNEL_ON) setGatePw(autoPassword(), true);
 
 const cookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]));
-app.post('/login', (req, res) => {
-  if (gate.pw && (req.body?.password || '') === gate.pw) { res.setHeader('Set-Cookie', authCookie()); res.json({ ok: true }); }
+// The access level for a request: an explicit session cookie wins; otherwise, if
+// no password protection is active the LAN is open (full), else unauthenticated.
+function levelOf(req) {
+  const c = cookies(req).tc_acc;
+  if (c === HASH.full) return 'full';
+  if (c === HASH.view) return 'view';
+  return gate.pw ? null : 'full';
+}
+
+// Open a link carrying a token → start a session at its level, then go to the app.
+app.get('/access/:token', (req, res) => {
+  const tok = req.params.token;
+  const level = tok === TOKENS.full ? 'full' : tok === TOKENS.view ? 'view' : null;
+  if (!level) return res.redirect('/login.html');
+  res.setHeader('Set-Cookie', accessCookie(level));
+  res.redirect('/');
+});
+app.post('/login', (req, res) => { // typed password → FULL session
+  if (gate.pw && (req.body?.password || '') === gate.pw) { res.setHeader('Set-Cookie', accessCookie('full')); res.json({ ok: true }); }
   else res.status(401).json({ error: 'Wrong password' });
 });
+app.post('/logout', (req, res) => { res.setHeader('Set-Cookie', 'tc_acc=; Max-Age=0; Path=/'); res.json({ ok: true }); });
+
+const OPEN_PATH = (p) => p === '/login' || p === '/login.html' || p === '/favicon.ico'
+  || p.startsWith('/css/') || p.startsWith('/js/') || p.startsWith('/vendor/') || p.startsWith('/access/');
 app.use((req, res, next) => {
-  if (!gate.auth) return next(); // no password active → open (LAN use)
-  const open = req.path === '/login' || req.path === '/login.html' || req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path === '/favicon.ico';
-  if (open || cookies(req).tc_auth === gate.auth) return next();
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Auth required' });
-  res.redirect('/login.html');
+  const level = levelOf(req);
+  req.access = level;
+  if (!level) { // protected and not yet authenticated
+    if (OPEN_PATH(req.path)) return next();
+    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Auth required' });
+    return res.redirect('/login.html');
+  }
+  // Read-only enforcement: a VIEW session may not change anything, via any route.
+  if (level === 'view' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.path !== '/logout') {
+    return res.status(403).json({ error: 'View-only access — editing is disabled.' });
+  }
+  next();
 });
 // no-cache so the browser always picks up app.js / css / html updates after a
 // `git pull` + restart, without needing a manual hard-refresh.
@@ -193,6 +236,8 @@ app.use(express.static(PUBLIC_DIR, {
 app.get('/api/bootstrap', (req, res) => {
   res.json({
     ready: true,
+    appVersion: APP_VERSION,
+    access: req.access || 'full',
     tankTypes: all('SELECT * FROM tank_types ORDER BY name').map(tankTypeSummary),
     tanks: all('SELECT * FROM tanks ORDER BY created_at DESC').map(tankSummary),
     parts: all('SELECT * FROM parts').map(mapPart),
@@ -303,14 +348,23 @@ app.get('/api/version', (req, res) => res.json({ version: dataVersion() }));
 // local network addresses of this host
 const lanIPs = () => Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === 'IPv4' && !a.internal).map((a) => a.address);
 
-// Share info: the public tunnel link (if running) + LAN links + a QR for the link.
+// Share info: the public tunnel link (if running) + LAN links + TWO tokened links
+// (full-edit and view-only), each with its own QR. The token in the link sets the
+// recipient's access level automatically when they open it — no password to type.
 app.get('/api/share', async (req, res) => {
   const t = tunnelInfo();
   const lan = lanIPs().map((ip) => `http://${ip}:${PORT}`);
-  const best = t.url || lan[0] || `http://localhost:${PORT}`;
-  let qr = '';
-  try { qr = await QRCode.toString(best, { type: 'svg', margin: 1, width: 200 }); } catch { /* ignore */ }
-  res.json({ tunnel: t, lan, qr, qrFor: best, password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null } });
+  const base = t.url || lan[0] || `http://localhost:${PORT}`;
+  const mk = async (token) => {
+    const url = `${base}/access/${token}`;
+    let qr = ''; try { qr = await QRCode.toString(url, { type: 'svg', margin: 1, width: 200 }); } catch { /* ignore */ }
+    return { url, qr };
+  };
+  res.json({
+    tunnel: t, lan, base,
+    links: { full: await mk(TOKENS.full), view: await mk(TOKENS.view) },
+    password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null },
+  });
 });
 
 // Turn the public link (Cloudflare tunnel) on/off at runtime — no restart, no
@@ -319,7 +373,7 @@ app.get('/api/share', async (req, res) => {
 app.post('/api/tunnel/start', (req, res) => {
   const created = ensureGatePassword();
   startTunnel(PORT);
-  if (created) res.setHeader('Set-Cookie', authCookie());
+  if (created) res.setHeader('Set-Cookie', accessCookie('full')); // keep the host (operator) signed in at full
   res.json({ ok: true, tunnel: tunnelInfo(), password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null } });
 });
 app.post('/api/tunnel/stop', (req, res) => {

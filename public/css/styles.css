@@ -54,6 +54,17 @@ button { cursor: pointer; }
 .topbar-right { display: flex; align-items: center; gap: 14px; }
 .search { width: 240px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 9px; outline: none; transition: border 0.12s; }
 .search:focus { border-color: var(--amber); }
+.ver-badge { font-family: var(--mono); font-size: 11px; color: var(--muted-2); background: var(--panel); border: 1px solid var(--line-2); border-radius: 20px; padding: 3px 9px; white-space: nowrap; }
+.ver-badge:empty { display: none; }
+.access-badge { font-size: 12px; font-weight: 600; color: var(--blue); background: rgba(72,148,224,0.14); border: 1px solid rgba(72,148,224,0.4); border-radius: 20px; padding: 3px 10px; white-space: nowrap; }
+.access-badge:empty { display: none; }
+
+/* ── View-only (read-only session): make edit affordances inert/hidden ──────── */
+.view-only [data-route="new"], .view-only [data-route="settings"], .view-only [data-route="share"] { display: none; }
+.view-only #view input:not([type="search"]), .view-only #view select, .view-only #view textarea { pointer-events: none; opacity: 0.75; }
+.view-only #view .icon-btn[data-del], .view-only #view [data-delpart], .view-only #view [data-delproof],
+.view-only #view .dropzone, .view-only #view #addPart, .view-only #view #impBtn, .view-only #view #filesBtn,
+.view-only #view #fuSave, .view-only #view #nCreate { display: none; }
 .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
 .conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-2); }
 .conn.ok .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
@@ -181,7 +192,12 @@ td.error { box-shadow: inset 3px 0 0 var(--red); }
 
 /* ── Dropdown menu (export) ──────────────────────────────────── */
 .dropdown { position: relative; display: inline-block; }
-.dropdown-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 180px;
+/* position:fixed + coordinates set by JS (positionDropdown) — NOT position:absolute.
+   .view scrolls with overflow:auto, which clips absolutely-positioned children that
+   extend past its scroll origin (you can't scroll left of 0), cropping the popover's
+   left side. Fixed positioning is anchored to the viewport instead, so it can't be
+   clipped by any scrolling ancestor. */
+.dropdown-pop { position: fixed; z-index: 200; min-width: 180px; max-width: calc(100vw - 16px);
   background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow);
   padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .dropdown-pop[hidden] { display: none; }
@@ -291,6 +307,7 @@ td.error { box-shadow: inset 3px 0 0 var(--red); }
   .topbar { padding: 10px 14px; gap: 10px; }
   .crumb { font-size: 16px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .conn { display: none; }
+  .ver-badge { display: none; }
   .topbar-right { flex: 0 1 auto; gap: 8px; }
   .search { width: 150px; }
 

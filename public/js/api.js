@@ -1,5 +1,19 @@
 // Thin fetch wrapper around the local server API.
+// Access level: a VIEW session is read-only. We refuse writes client-side too (the
+// server enforces it regardless), so any edit attempt shows a clean "view-only"
+// notice instead of a raw error — and never reaches the network.
+import { toast } from './ui.js';
+let _access = 'full';
+const VIEW_MSG = '🔒 View-only access — editing is disabled';
+function guard(method) {
+  if (_access === 'view' && method !== 'GET') {
+    toast(VIEW_MSG, 'err');
+    const e = new Error(VIEW_MSG); e.viewDenied = true; throw e;
+  }
+}
+
 async function req(method, url, body) {
+  guard(method);
   const opt = { method, headers: {} };
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const res = await fetch(url, opt);
@@ -8,6 +22,7 @@ async function req(method, url, body) {
   return data;
 }
 async function upload(url, formData) {
+  guard('POST');
   const res = await fetch(url, { method: 'POST', body: formData });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
@@ -15,6 +30,7 @@ async function upload(url, formData) {
 }
 
 export const api = {
+  setAccess: (a) => { _access = a === 'view' ? 'view' : 'full'; },
   bootstrap: () => req('GET', '/api/bootstrap'),
 
   // parts (live tracking)
