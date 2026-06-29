@@ -59,12 +59,17 @@ button { cursor: pointer; }
 .access-badge { font-size: 12px; font-weight: 600; color: var(--blue); background: rgba(72,148,224,0.14); border: 1px solid rgba(72,148,224,0.4); border-radius: 20px; padding: 3px 10px; white-space: nowrap; }
 .access-badge:empty { display: none; }
 
-/* ── View-only (read-only session): make edit affordances inert/hidden ──────── */
+/* ── View-only (read-only session) ──────────────────────────────────────────
+   Edit-only nav + action buttons are hidden; inline fields stay visible but are
+   blocked by a capture-phase guard (app.js) that shows an "Access denied" toast
+   on any edit attempt. We do NOT use pointer-events:none, so the tap is felt and
+   the message can fire. The "Local · Offline" chrome is hidden for shared viewers. */
 .view-only [data-route="new"], .view-only [data-route="settings"], .view-only [data-route="share"] { display: none; }
-.view-only #view input:not([type="search"]), .view-only #view select, .view-only #view textarea { pointer-events: none; opacity: 0.75; }
+.view-only #view input:not([type="search"]), .view-only #view select, .view-only #view textarea { opacity: 0.7; cursor: not-allowed; }
 .view-only #view .icon-btn[data-del], .view-only #view [data-delpart], .view-only #view [data-delproof],
 .view-only #view .dropzone, .view-only #view #addPart, .view-only #view #impBtn, .view-only #view #filesBtn,
 .view-only #view #fuSave, .view-only #view #nCreate { display: none; }
+.view-only .brand-text span, .view-only .conn, .view-only .sync-meta { display: none; }
 .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
 .conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-2); }
 .conn.ok .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }

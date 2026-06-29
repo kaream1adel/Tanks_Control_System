@@ -1,18 +1,22 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Tank Control — Sign in</title>
   <link rel="stylesheet" href="/css/styles.css" />
   <style>
     body { display: grid; place-items: center; min-height: 100vh; }
-    .login { width: 320px; }
+    .login { width: 320px; max-width: 92vw; }
     .login .brand-mark { width: 48px; height: 48px; font-size: 24px; margin: 0 auto 16px; }
-    .login h2 { text-align: center; margin: 0 0 4px; }
+    .login h2 { text-align: center; margin: 0 0 10px; }
     .login p { text-align: center; color: var(--muted); margin: 0 0 22px; font-size: 13px; }
-    .login input { width: 100%; padding: 12px; margin-bottom: 12px; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 9px; outline: none; color: var(--text); }
+    .login .mode-wrap { text-align: center; margin-bottom: 14px; }
+    .login .mode-pill { display: inline-block; font-size: 12px; font-weight: 700; border-radius: 20px; padding: 4px 12px; }
+    .mode-editor { color: var(--amber-2); background: var(--amber-dim); border: 1px solid rgba(245,166,35,.4); }
+    .mode-viewer { color: var(--blue); background: rgba(72,148,224,0.14); border: 1px solid rgba(72,148,224,0.4); }
+    .login input { width: 100%; padding: 14px; margin-bottom: 12px; font-size: 16px; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 9px; outline: none; color: var(--text); }
     .login input:focus { border-color: var(--amber); }
-    .login .btn { width: 100%; }
+    .login .btn { width: 100%; padding: 13px; }
     .err { color: var(--red); font-size: 13px; text-align: center; height: 18px; margin-top: 10px; }
   </style>
 </head>
@@ -20,14 +24,19 @@
   <div class="panel login">
     <div class="brand-mark">▦</div>
     <h2>Tank Control</h2>
-    <p>Enter the access password</p>
+    <div class="mode-wrap"><span class="mode-pill" id="modePill"></span></div>
+    <p id="sub">Enter the access password</p>
     <input id="pw" type="password" placeholder="Password" autofocus />
     <button class="btn" id="go">Sign in</button>
     <div class="err" id="err"></div>
   </div>
   <script>
+    const mode = new URLSearchParams(location.search).get('mode') === 'viewer' ? 'viewer' : 'editor';
+    const pill = document.getElementById('modePill');
+    if (mode === 'viewer') { pill.textContent = '👁 Viewer'; pill.className = 'mode-pill mode-viewer'; document.getElementById('sub').textContent = 'View-only access — enter the viewer password'; }
+    else { pill.textContent = '✏ Editor'; pill.className = 'mode-pill mode-editor'; document.getElementById('sub').textContent = 'Full access — enter the editor password'; }
     const submit = async () => {
-      const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pw').value }) });
+      const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, password: document.getElementById('pw').value }) });
       if (r.ok) location.href = '/';
       else document.getElementById('err').textContent = 'Wrong password';
     };

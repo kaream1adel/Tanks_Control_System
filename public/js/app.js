@@ -9,7 +9,7 @@ const state = {
   tankFilter: 'all', statusFilter: 'all', phaseFilter: 'all', group: true, q: '',
   sort: { key: 'no', dir: 1 },
   followTankId: null, followTab: 'daily', followDate: new Date().toISOString().slice(0, 10), followPhase: '',
-  tankTab: 'parts', access: 'full',
+  tankTab: 'parts', access: 'full', shareMode: 'editor',
 };
 
 const $ = (s) => document.querySelector(s);
@@ -88,6 +88,21 @@ function wireChrome() {
     if (state.route !== 'parts') { state.route = 'parts'; setActive(); }
     render(); $('#globalSearch').focus();
   });
+  // View-only guard: block any interaction with an inline edit control and show a
+  // clear "Access denied" notice (capture phase, so it fires before focus/open).
+  let _denyAt = 0;
+  const editTarget = (el) => el instanceof Element && el.closest('#view')
+    && el.matches('input:not([type="search"]), select, textarea');
+  const deny = (e) => {
+    if (state.access !== 'view' || !editTarget(e.target)) return;
+    e.preventDefault(); e.stopPropagation();
+    const now = Date.now(); if (now - _denyAt > 1500) { _denyAt = now; toast('🔒 Access denied — view-only access', 'err'); }
+  };
+  document.addEventListener('mousedown', deny, true);
+  document.addEventListener('keydown', (e) => {
+    if (state.access !== 'view' || !editTarget(e.target)) return;
+    if (e.key.length === 1 || ['Backspace', 'Delete', 'Enter', ' '].includes(e.key)) deny(e);
+  }, true);
 }
 function go(route, opts = {}) {
   state.route = route;
@@ -1195,33 +1210,20 @@ async function renderShare() {
   let s; try { s = await api.share(); } catch (e) { view().innerHTML = `<div class="banner warn">${esc(e.message)}</div>`; return; }
   if (state.route !== 'share') return; // user navigated away during fetch
   const t = s.tunnel || { status: 'off' };
-  const L = s.links || {};
-  const pw = s.password || {};
-
   const on = t.status === 'on' && t.url;
-  const accessCard = (icon, title, sub, link) => `
-    <div class="panel access-card">
-      <h3>${icon} ${title}</h3>
-      <p class="guide-p" style="margin-top:-4px">${sub}</p>
-      <div class="share-link"><input readonly value="${esc(link?.url || '')}"/><button class="btn sm" data-copy="${esc(link?.url || '')}">Copy</button></div>
-      <div class="share-qr">${link?.qr || '<div class="muted" style="padding:20px">QR unavailable</div>'}</div>
-    </div>`;
-  const cards = `
-    <div class="section-title">Share access — send a link or scan the QR</div>
-    <div class="hint" style="margin:-2px 0 12px">${on
-      ? 'These are <b>public</b> links — reachable from any network. Each one signs the person in automatically at its level, no password to type.'
-      : 'These work on the <b>same Wi-Fi</b> as this PC. Turn on the public link below to share from anywhere.'}</div>
-    <div class="grid" style="grid-template-columns:1fr 1fr">
-      ${accessCard('🌐', 'Full access — can edit', 'View <b>and edit</b> everything. Give to operators / your team.', L.full)}
-      ${accessCard('👁', 'View only — read-only', 'View progress only — <b>cannot</b> edit, add, delete or save.', L.view)}
-    </div>`;
+  const L = s.links || {};
+  const P = s.passwords || {};
+  const mode = state.shareMode === 'viewer' ? 'viewer' : 'editor';
+  const isEd = mode === 'editor';
+  const link = isEd ? L.editor : L.viewer;
+  const curPw = isEd ? (P.editor || '') : (P.viewer || '');
 
   let tunnelPanel;
   if (on) {
     tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="row-between">
-        <div><b>🌐 Public link is ON</b> <span class="muted">— anyone, any network</span></div>
+        <div><b>🌐 Public link is ON</b> <span class="muted">— reachable from any network</span></div>
         <button class="btn ghost sm" id="tunToggle">⏻ Turn off</button></div>
-      <div class="hint" style="margin-top:6px">${pw.auto ? `A full-access password is also set: <b>${esc(pw.auto)}</b>. ` : ''}The public link changes if you restart the app — reopen this page for the current QR.</div></div>`;
+      <div class="hint" style="margin-top:6px">The public link changes if you restart the app — reopen this page for the current QR.</div></div>`;
   } else if (t.status === 'downloading' || t.status === 'starting') {
     tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="loading">${t.status === 'downloading' ? 'Setting up the tunnel (downloading helper, one-time ~50MB)…' : 'Connecting your public link…'}</div>
       <div style="margin-top:10px"><button class="btn ghost sm" id="tunToggle">Cancel</button></div></div>`;
@@ -1230,24 +1232,54 @@ async function renderShare() {
       <button class="btn" id="tunToggle">🌐 Try again</button></div>`;
   } else {
     tunnelPanel = `<div class="panel" style="margin-top:16px"><div class="row-between">
-        <div><b>🌐 Public link is OFF</b> <span class="muted">— the links above only work on this Wi-Fi</span></div>
+        <div><b>🌐 Public link is OFF</b> <span class="muted">— the link works only on this Wi-Fi</span></div>
         <button class="btn" id="tunToggle">🌐 Enable public access</button></div>
-      <div class="hint" style="margin-top:6px">Turn it on to share from anywhere. First time downloads a small helper (~50&nbsp;MB), once; a password is set automatically so the base link is never open.</div></div>`;
+      <div class="hint" style="margin-top:6px">Turn it on to share from anywhere. First time downloads a small helper (~50&nbsp;MB), once.</div></div>`;
   }
 
   view().innerHTML = `
-    ${cards}
+    <div class="tabs" id="shareModeTabs" style="margin-bottom:14px">
+      <button class="tab ${isEd ? 'on' : ''}" data-m="editor">✏ Editor — can edit</button>
+      <button class="tab ${!isEd ? 'on' : ''}" data-m="viewer">👁 Viewer — read-only</button>
+    </div>
+    <div class="grid" style="grid-template-columns:1.1fr .9fr">
+      <div class="panel access-card">
+        <h3>${isEd ? '✏ Editor link & QR' : '👁 Viewer link & QR'}</h3>
+        <p class="guide-p" style="margin-top:-4px">${isEd
+          ? 'Whoever opens this and enters the <b>editor password</b> can view <b>and edit</b> everything.'
+          : 'Whoever opens this and enters the <b>viewer password</b> can <b>only view</b> — no edits, ever.'}</p>
+        <div class="share-link"><input readonly value="${esc(link?.url || '')}"/><button class="btn sm" data-copy="${esc(link?.url || '')}">Copy link</button></div>
+        <div class="share-qr">${link?.qr || '<div class="muted" style="padding:20px">QR unavailable</div>'}</div>
+        <div class="hint" style="margin-top:8px">${on ? 'Public link — works from any network.' : 'Works on the same Wi-Fi. Enable the public link below to share anywhere.'}</div>
+      </div>
+      <div class="panel">
+        <h3>${isEd ? 'Editor password' : 'Viewer password'}</h3>
+        <p class="guide-p" style="margin-top:-4px">People opening the <b>${mode}</b> link must enter this password first.</p>
+        <div class="share-link"><input id="pwField" type="text" value="${esc(curPw)}" placeholder="set a password"/><button class="btn sm" id="savePw">Save</button></div>
+        <div class="hint">At least 3 characters. Changing it doesn't sign out anyone already in.</div>
+      </div>
+    </div>
     ${tunnelPanel}
     <div class="panel" style="margin-top:16px"><h3>How sharing works</h3>
       <ol class="guide-ol">
         <li>Keep this host PC running the app (it holds the data).</li>
-        <li>Send the <b>Full access</b> link/QR to people who update work, and the <b>View only</b> link/QR to people who should just watch progress.</li>
-        <li>They open the link (or scan the QR) → they're straight in at the right level. Edits sync to everyone within ~3 seconds.</li>
+        <li>Pick <b>Editor</b> or <b>Viewer</b> above, set its password, then send that link/QR to the right people.</li>
+        <li>They open the link → enter the password → they're in at that level. Edits sync to everyone within ~3 seconds.</li>
       </ol>
-      <div class="hint">View-only is enforced on the server: a view link genuinely cannot change data, through any screen. Everyone shares one database on this PC — no copies, no drift.</div>
+      <div class="hint">View-only is enforced on the server — a viewer genuinely cannot change anything, through any screen. Everyone shares one database on this PC.</div>
     </div>`;
 
+  view().querySelectorAll('#shareModeTabs .tab').forEach((b) => b.onclick = () => { state.shareMode = b.dataset.m; renderShare(); });
   view().querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); toast('Link copied', 'ok'); });
+  const sp = $('#savePw');
+  if (sp) sp.onclick = async () => {
+    const v = $('#pwField').value.trim();
+    if (v.length < 3) return toast('Password must be at least 3 characters', 'err');
+    sp.disabled = true;
+    try { await api.changeAccessPassword(mode, v); toast(`${isEd ? 'Editor' : 'Viewer'} password saved`, 'ok'); }
+    catch (e) { toast('Save failed: ' + e.message, 'err'); }
+    sp.disabled = false;
+  };
   const tg = $('#tunToggle');
   if (tg) tg.onclick = async () => {
     const turningOn = t.status === 'off' || t.status === 'error';

@@ -4,7 +4,7 @@
 // notice instead of a raw error — and never reaches the network.
 import { toast } from './ui.js';
 let _access = 'full';
-const VIEW_MSG = '🔒 View-only access — editing is disabled';
+const VIEW_MSG = '🔒 Access denied — you have view-only access';
 function guard(method) {
   if (_access === 'view' && method !== 'GET') {
     toast(VIEW_MSG, 'err');
@@ -78,6 +78,7 @@ export const api = {
   share: () => req('GET', '/api/share'),
   tunnelStart: () => req('POST', '/api/tunnel/start'),
   tunnelStop: () => req('POST', '/api/tunnel/stop'),
+  changeAccessPassword: (which, password) => req('POST', '/api/access/password', { which, password }),
   exportType: async (id) => { const res = await fetch(`/api/tank-types/${id}/export.xlsx`); if (!res.ok) throw new Error('Export failed (' + res.status + ')'); return res.blob(); },
   exportBlob: async (url) => { const res = await fetch(url); if (!res.ok) throw new Error('Export failed (' + res.status + ')'); return res.blob(); },
 

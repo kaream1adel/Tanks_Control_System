@@ -144,75 +144,65 @@ function applyPatch(table, id, body, fieldMap) {
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 
-// Password gate (set APP_PASSWORD in the launcher). When the public tunnel is on
-// we NEVER leave it open: if no password is set, auto-generate one (stored in
-// data/auto-password.txt and shown on the Share page). Cookie holds a hash only.
+// ── Access: editor (full, can edit) vs viewer (read-only) ────────────────────
+// Each mode is reached by a link …/m/editor or …/m/viewer that asks for THAT
+// mode's PASSWORD, then starts a session at its level. Both passwords are editable
+// from the Share tab (editor session only) and persisted in access-config.json.
+// The cookie stores only a level-hash; a viewer session is enforced read-only by
+// the middleware below — it can never reach a write endpoint, through any route.
 const TUNNEL_ON = process.env.TUNNEL === '1';
-function autoPassword() {
-  const f = join(DATA_DIR, 'auto-password.txt');
-  try { if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim(); } catch { /* recreate */ }
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const pw = crypto.randomBytes(4).toString('hex'); // 8 hex chars
-  fs.writeFileSync(f, pw);
-  return pw;
+const ACCESS_FILE = join(DATA_DIR, 'access-config.json');
+function loadAccessCfg() {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(ACCESS_FILE, 'utf8')); } catch { /* defaults below */ }
+  let changed = false;
+  if (!cfg.secret) { cfg.secret = crypto.randomBytes(16).toString('hex'); changed = true; }
+  if (!cfg.editorPw) { cfg.editorPw = process.env.APP_PASSWORD || crypto.randomBytes(4).toString('hex'); changed = true; }
+  if (!cfg.viewerPw) { cfg.viewerPw = crypto.randomBytes(4).toString('hex'); changed = true; }
+  if (changed) { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ACCESS_FILE, JSON.stringify(cfg)); }
+  return cfg;
 }
-// ── Access levels: FULL (edit) vs VIEW (read-only) ───────────────────────────
-// Two shareable secret tokens live in data/access-tokens.json. Opening a link
-// that carries a token (the Share-page QR/links) sets a session cookie at that
-// level. The full password (APP_PASSWORD / tunnel auto-password) also logs in at
-// FULL. The cookie stores only a hash. A VIEW session is enforced read-only by
-// the middleware below — it can never reach a write endpoint, whatever the client.
-function loadAccessTokens() {
-  const f = join(DATA_DIR, 'access-tokens.json');
-  try { const t = JSON.parse(fs.readFileSync(f, 'utf8')); if (t.full && t.view && t.secret) return t; } catch { /* regenerate */ }
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const t = { full: crypto.randomBytes(12).toString('hex'), view: crypto.randomBytes(12).toString('hex'), secret: crypto.randomBytes(16).toString('hex') };
-  fs.writeFileSync(f, JSON.stringify(t));
-  return t;
-}
-const TOKENS = loadAccessTokens();
-const levelHash = (level) => crypto.createHash('sha256').update(`tankctl:${level}:${TOKENS.secret}`).digest('hex').slice(0, 32);
+const accessCfg = loadAccessCfg();
+const saveAccessCfg = () => { try { fs.writeFileSync(ACCESS_FILE, JSON.stringify(accessCfg)); } catch { /* ignore */ } };
+const levelHash = (level) => crypto.createHash('sha256').update(`tankctl:${level}:${accessCfg.secret}`).digest('hex').slice(0, 32);
 const HASH = { full: levelHash('full'), view: levelHash('view') };
 const accessCookie = (level) => `tc_acc=${HASH[level]}; HttpOnly; SameSite=Lax; Max-Age=2592000; Path=/`;
 
-// Dynamic password gate (FULL access via typed password). Protection is ON when a
-// password is set (APP_PASSWORD, or the auto one created when the tunnel goes up).
-const gate = { pw: '', auto: false };
-function setGatePw(pw, isAuto = false) { gate.pw = pw || ''; gate.auto = !!(pw && isAuto); }
-function ensureGatePassword() { // protect the link when the tunnel is switched on
-  if (gate.pw) return false;
-  setGatePw(process.env.APP_PASSWORD || autoPassword(), !process.env.APP_PASSWORD);
-  return true;
-}
-if (process.env.APP_PASSWORD) setGatePw(process.env.APP_PASSWORD);
-else if (TUNNEL_ON) setGatePw(autoPassword(), true);
+// Base-URL protection: when ON, the plain address requires sign-in. The shared
+// mode links always require their password regardless. Protection turns on with
+// the public tunnel (or a launcher APP_PASSWORD); the host's own LAN stays open.
+let protectionOn = !!process.env.APP_PASSWORD || TUNNEL_ON;
 
 const cookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]));
-// The access level for a request: an explicit session cookie wins; otherwise, if
-// no password protection is active the LAN is open (full), else unauthenticated.
 function levelOf(req) {
   const c = cookies(req).tc_acc;
   if (c === HASH.full) return 'full';
   if (c === HASH.view) return 'view';
-  return gate.pw ? null : 'full';
+  return protectionOn ? null : 'full'; // protected → must sign in; open LAN → full
 }
 
-// Open a link carrying a token → start a session at its level, then go to the app.
-app.get('/access/:token', (req, res) => {
-  const tok = req.params.token;
-  const level = tok === TOKENS.full ? 'full' : tok === TOKENS.view ? 'view' : null;
-  if (!level) return res.redirect('/login.html');
-  res.setHeader('Set-Cookie', accessCookie(level));
-  res.redirect('/');
+// A mode link ALWAYS asks for that mode's password, unless the visitor already
+// holds a real session cookie that satisfies it (we check the cookie itself, not
+// the open-LAN fallback — so a shared viewer link always prompts for a password).
+app.get('/m/:mode', (req, res) => {
+  const mode = req.params.mode === 'editor' ? 'editor' : req.params.mode === 'viewer' ? 'viewer' : null;
+  if (!mode) return res.redirect('/login.html');
+  const c = cookies(req).tc_acc;
+  const sess = c === HASH.full ? 'full' : c === HASH.view ? 'view' : null;
+  if (sess === 'full' || (sess === 'view' && mode === 'viewer')) return res.redirect('/');
+  res.redirect('/login.html?mode=' + mode);
 });
-app.post('/login', (req, res) => { // typed password → FULL session
-  if (gate.pw && (req.body?.password || '') === gate.pw) { res.setHeader('Set-Cookie', accessCookie('full')); res.json({ ok: true }); }
-  else res.status(401).json({ error: 'Wrong password' });
+app.post('/login', (req, res) => {
+  const mode = req.body?.mode === 'viewer' ? 'viewer' : 'editor';
+  const password = req.body?.password || '';
+  if (mode === 'editor' && password === accessCfg.editorPw) { res.setHeader('Set-Cookie', accessCookie('full')); return res.json({ ok: true, level: 'full' }); }
+  if (mode === 'viewer' && password === accessCfg.viewerPw) { res.setHeader('Set-Cookie', accessCookie('view')); return res.json({ ok: true, level: 'view' }); }
+  res.status(401).json({ error: 'Wrong password' });
 });
 app.post('/logout', (req, res) => { res.setHeader('Set-Cookie', 'tc_acc=; Max-Age=0; Path=/'); res.json({ ok: true }); });
 
 const OPEN_PATH = (p) => p === '/login' || p === '/login.html' || p === '/favicon.ico'
-  || p.startsWith('/css/') || p.startsWith('/js/') || p.startsWith('/vendor/') || p.startsWith('/access/');
+  || p.startsWith('/css/') || p.startsWith('/js/') || p.startsWith('/vendor/') || p.startsWith('/m/');
 app.use((req, res, next) => {
   const level = levelOf(req);
   req.access = level;
@@ -355,30 +345,43 @@ app.get('/api/share', async (req, res) => {
   const t = tunnelInfo();
   const lan = lanIPs().map((ip) => `http://${ip}:${PORT}`);
   const base = t.url || lan[0] || `http://localhost:${PORT}`;
-  const mk = async (token) => {
-    const url = `${base}/access/${token}`;
+  const mk = async (mode) => {
+    const url = `${base}/m/${mode}`;
     let qr = ''; try { qr = await QRCode.toString(url, { type: 'svg', margin: 1, width: 200 }); } catch { /* ignore */ }
     return { url, qr };
   };
   res.json({
     tunnel: t, lan, base,
-    links: { full: await mk(TOKENS.full), view: await mk(TOKENS.view) },
-    password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null },
+    links: { editor: await mk('editor'), viewer: await mk('viewer') },
+    // passwords are only revealed to an editor session (viewers never see them)
+    passwords: req.access === 'full' ? { editor: accessCfg.editorPw, viewer: accessCfg.viewerPw } : null,
   });
 });
 
-// Turn the public link (Cloudflare tunnel) on/off at runtime — no restart, no
-// config edit. Switching it on auto-protects the app with a password if none was
-// set (and logs the caller in via cookie so they aren't locked out).
+// Set/change an access password (editor session only).
+app.post('/api/access/password', (req, res) => {
+  if (req.access !== 'full') return res.status(403).json({ error: 'Editor access required.' });
+  const which = req.body?.which === 'viewer' ? 'viewer' : req.body?.which === 'editor' ? 'editor' : null;
+  const pw = (req.body?.password || '').trim();
+  if (!which) return res.status(400).json({ error: 'Unknown password field' });
+  if (pw.length < 3) return res.status(400).json({ error: 'Password must be at least 3 characters' });
+  if (which === 'editor') accessCfg.editorPw = pw; else accessCfg.viewerPw = pw;
+  saveAccessCfg(); // existing sessions keep working (cookie hashes level+secret, not the password)
+  logActivity('access', `Changed ${which} password`);
+  res.json({ ok: true });
+});
+
+// Turn the public link (Cloudflare tunnel) on/off at runtime — no restart needed.
+// Turning it on protects the base URL (the shared links always need a password).
 app.post('/api/tunnel/start', (req, res) => {
-  const created = ensureGatePassword();
+  protectionOn = true;
   startTunnel(PORT);
-  if (created) res.setHeader('Set-Cookie', accessCookie('full')); // keep the host (operator) signed in at full
-  res.json({ ok: true, tunnel: tunnelInfo(), password: { set: !!gate.pw, auto: gate.auto ? gate.pw : null } });
+  res.setHeader('Set-Cookie', accessCookie('full')); // keep the host (operator) signed in at full
+  res.json({ ok: true, tunnel: tunnelInfo() });
 });
 app.post('/api/tunnel/stop', (req, res) => {
   stopTunnel();
-  if (gate.auto) setGatePw(''); // drop the auto password once the public link is down
+  protectionOn = !!process.env.APP_PASSWORD; // base URL open again on LAN unless a launcher password is set
   res.json({ ok: true, tunnel: tunnelInfo() });
 });
 
@@ -1087,7 +1090,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  ⚙  Tank Control (local) → http://localhost:${PORT}`);
   const ips = lanIPs();
   if (ips.length) console.log(`  on this network:        ${ips.map((ip) => `http://${ip}:${PORT}`).join('   ')}`);
-  console.log(`  data: app.sqlite  ·  ${all('SELECT 1 FROM tank_types').length} tank type(s)${gate.pw ? '  ·  🔒 password on' : ''}${gate.auto ? ` (auto: ${gate.pw})` : ''}\n`);
+  console.log(`  data: app.sqlite  ·  ${all('SELECT 1 FROM tank_types').length} tank type(s)${protectionOn ? '  ·  🔒 sign-in required' : ''}\n`);
   // durability: back up shortly after boot, then on a schedule
   const everyH = Number(process.env.BACKUP_EVERY_HOURS) || 6;
   setTimeout(() => runBackup('startup'), 4000);
