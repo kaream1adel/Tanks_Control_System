@@ -1,7 +1,8 @@
 import { api } from './api.js';
 import { el, esc, chip, statusClass, fmtDate, dueLabel, fmtSize, bar, statBars, ringHTML, toast, modal } from './ui.js';
 
-const DONE = new Set(['Done', 'Delivered']);
+const DONE = new Set(['Delivered']); // part status is two-state: Delivered / Not Delivered (derived from qty)
+const TANK_DONE = new Set(['Done', 'Delivered']); // tank (order) statuses keep their own lifecycle
 
 const state = {
   tankTypes: [], tanks: [], parts: [], options: { parts: {}, instances: {}, people: {} },
@@ -114,9 +115,9 @@ function go(route, opts = {}) {
 function setActive() { document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.route === state.route)); }
 
 function render() {
-  const crumbs = { overview: 'Overview', tanks: 'Tanks', parts: 'All Parts', types: 'Tank Types', rework: 'Rework Analytics', followup: 'Follow-up', reports: 'Reports', settings: 'Settings', share: 'Share access', guide: 'Guide & Data Safety', new: 'New Tank', typeDetail: 'Tank Type', tankDetail: 'Tank' };
+  const crumbs = { overview: 'Overview', tanks: 'Tanks', parts: 'All Parts', types: 'Tank Types', followup: 'Follow-up', reports: 'Reports', settings: 'Settings', share: 'Share access', guide: 'Guide & Data Safety', new: 'New Tank', typeDetail: 'Tank Type', tankDetail: 'Tank' };
   $('#crumb').textContent = crumbs[state.route] || '';
-  ({ overview: renderOverview, tanks: renderTanks, parts: renderParts, types: renderTypes, typeDetail: renderTypeDetail, tankDetail: renderTankDetail, rework: renderRework, followup: renderFollowup, reports: renderReports, settings: renderSettings, share: renderShare, guide: renderGuide, new: renderNew }[state.route] || renderOverview)();
+  ({ overview: renderOverview, tanks: renderTanks, parts: renderParts, types: renderTypes, typeDetail: renderTypeDetail, tankDetail: renderTankDetail, followup: renderFollowup, reports: renderReports, settings: renderSettings, share: renderShare, guide: renderGuide, new: renderNew }[state.route] || renderOverview)();
 }
 
 // ── Overview ──────────────────────────────────────────────────
@@ -124,9 +125,10 @@ function renderOverview() {
   const parts = state.parts;
   const total = parts.length;
   const done = parts.filter((p) => DONE.has(p.status)).length;
-  const rework = parts.filter((p) => (p.reworkCount ?? 0) > 0 || p.status === 'Rework').length;
   const pct = total ? Math.round((done / total) * 100) : 0;
-  const activeTanks = state.tanks.filter((t) => !DONE.has(t.status)).length;
+  const activeTanks = state.tanks.filter((t) => !TANK_DONE.has(t.status)).length;
+  const qtyDelivered = parts.reduce((s, p) => s + (p.deliveredQty || 0), 0);
+  const qtyTotal = parts.reduce((s, p) => s + (p.qtyTotal || 0), 0);
 
   if (!state.tanks.length) {
     const e = el('div.empty', { html: `<div class="big">▦</div><h2>No tanks yet</h2>
@@ -139,7 +141,6 @@ function renderOverview() {
 
   const statusEntries = countBy(parts, 'status', (state.options.parts.status || []).map((o) => o.name)).map((e) => ({ ...e, chip: true }));
   const phaseEntries = countBy(parts.filter((p) => !DONE.has(p.status)), 'phase', (state.options.parts.phase || []).map((o) => o.name)).filter((e) => e.n > 0);
-  const reworkByReason = countBy(parts.filter((p) => (p.reworkCount ?? 0) > 0), 'reworkReason', (state.options.parts.reworkReason || []).map((o) => o.name)).filter((e) => e.n > 0);
   const tankRows = state.tanks.map((t) => `
     <div class="statrow"><div class="name" style="width:170px;cursor:pointer" data-tank="${t.id}">${esc(t.name || 'Untitled')}</div>
       ${bar(t.completion, t.completion === 100)}<div class="n">${t.completion}%</div></div>`).join('');
@@ -147,18 +148,15 @@ function renderOverview() {
   view().innerHTML = `
     <div class="grid kpis">
       <div class="panel kpi amber"><div class="label">Overall completion</div><div class="value">${pct}<small>%</small></div><div class="spark">◧</div><div style="margin-top:12px">${bar(pct, pct === 100)}</div></div>
-      <div class="panel kpi"><div class="label">Parts done</div><div class="value">${done}<small>/ ${total}</small></div><div class="spark">▤</div></div>
+      <div class="panel kpi"><div class="label">Parts delivered</div><div class="value">${done}<small>/ ${total}</small></div><div class="spark">▤</div></div>
       <div class="panel kpi"><div class="label">Active tanks</div><div class="value">${activeTanks}<small>/ ${state.tanks.length}</small></div><div class="spark">▥</div></div>
-      <div class="panel kpi"><div class="label">In rework</div><div class="value" style="color:var(--red)">${rework}</div><div class="spark">↻</div></div>
+      <div class="panel kpi"><div class="label">Qty delivered</div><div class="value" style="color:var(--green)">${qtyDelivered}<small>/ ${qtyTotal}</small></div><div class="spark">📦</div></div>
     </div>
     <div class="grid" style="grid-template-columns:1fr 1fr">
-      <div class="panel"><h3>Status breakdown</h3>${statBars(statusEntries) || '<div class="muted">No parts.</div>'}</div>
+      <div class="panel"><h3>Delivery status</h3>${statBars(statusEntries) || '<div class="muted">No parts.</div>'}</div>
       <div class="panel"><h3>Pipeline (open parts by phase)</h3>${statBars(phaseEntries) || '<div class="muted">Nothing in progress.</div>'}</div>
     </div>
-    <div class="grid" style="grid-template-columns:1.4fr 1fr;margin-top:16px">
-      <div class="panel"><h3>Progress per tank</h3>${tankRows}</div>
-      <div class="panel"><h3>Rework hotspots (by reason)</h3>${statBars(reworkByReason) || '<div class="muted">No rework logged. 🎉</div>'}</div>
-    </div>
+    <div class="panel" style="margin-top:16px"><h3>Progress per tank</h3>${tankRows}</div>
     <div class="section-title" style="margin-top:18px">Phase distribution per tank</div>
     <div class="grid phase-pie-grid">${state.tanks.map(tankPhaseCard).join('')}</div>`;
   view().querySelectorAll('[data-tank]').forEach((n) => n.addEventListener('click', () => go('tankDetail', { tankId: n.dataset.tank })));
@@ -175,10 +173,13 @@ function donutBg(segs) {
 }
 function tankPhaseCard(t) {
   const tp = state.parts.filter((p) => p.tankId === t.id);
+  const open = tp.filter((p) => !DONE.has(p.status)); // delivered parts leave the phase pipeline
   const order = (state.options.parts.phase || []).map((o) => o.name);
-  const segs = countBy(tp, 'phase', order).filter((e) => e.n > 0).map((c) => ({ name: c.name, n: c.n, color: phaseColor(c.name, order) }));
-  const blank = tp.filter((p) => !p.phase).length;
+  const segs = countBy(open, 'phase', order).filter((e) => e.n > 0).map((c) => ({ name: c.name, n: c.n, color: phaseColor(c.name, order) }));
+  const blank = open.filter((p) => !p.phase).length;
   if (blank) segs.push({ name: 'Unset', n: blank, color: 'var(--muted-2)' });
+  const deliveredN = tp.length - open.length;
+  if (deliveredN) segs.push({ name: 'Delivered', n: deliveredN, color: 'var(--green)' });
   const headline = `<div class="row-between" style="margin-bottom:10px"><div class="tname" style="cursor:pointer" data-tank="${t.id}">${esc(t.name || 'Untitled')}</div><span class="muted">${tp.length} parts</span></div>`;
   if (!segs.length) return `<div class="panel">${headline}<div class="muted">No parts.</div></div>`;
   const legend = segs.map((s) => `<span class="legend-item"><span class="legend-dot" style="background:${s.color}"></span>${esc(s.name)} <b>${s.n}</b></span>`).join('');
@@ -204,7 +205,7 @@ function tankCard(t) {
       <button class="icon-btn" data-del title="Delete tank">🗑</button></div>
     <div class="ring-wrap">${ringHTML(t.completion, t.completion === 100)}
       <div style="flex:1">
-        <div class="counts" style="margin-bottom:8px"><b>${t.partsDone}</b>/${t.partsTotal} parts${t.reworkParts ? ` · <span style="color:var(--red)">${t.reworkParts} rework</span>` : ''}</div>
+        <div class="counts" style="margin-bottom:8px"><b>${t.partsDone}</b>/${t.partsTotal} parts delivered</div>
         ${bar(t.completion, t.completion === 100)}
         <div class="counts" style="margin-top:10px">${due ? `<span style="color:var(--${due.cls})">${due.text}</span> · ` : ''}${fmtDate(t.deliveryDate)}</div>
       </div></div>
@@ -246,9 +247,9 @@ function renderTankDetail() {
     </div>
     <div class="grid kpis" style="margin-bottom:14px">
       <div class="panel kpi amber"><div class="label">Completion</div><div class="value">${t.completion}<small>%</small></div><div style="margin-top:10px">${bar(t.completion, t.completion === 100)}</div></div>
-      <div class="panel kpi"><div class="label">Parts done</div><div class="value">${t.partsDone}<small>/ ${t.partsTotal}</small></div></div>
-      <div class="panel kpi"><div class="label">Delivered</div><div class="value" style="color:var(--green)">${delivered}<small>/ ${parts.length}</small></div></div>
-      <div class="panel kpi"><div class="label">In rework</div><div class="value" style="color:var(--red)">${t.reworkParts || 0}</div></div>
+      <div class="panel kpi"><div class="label">Parts delivered</div><div class="value" style="color:var(--green)">${delivered}<small>/ ${parts.length}</small></div></div>
+      <div class="panel kpi"><div class="label">Qty delivered</div><div class="value">${parts.reduce((s, p) => s + (p.deliveredQty || 0), 0)}<small>/ ${parts.reduce((s, p) => s + (p.qtyTotal || 0), 0)}</small></div></div>
+      <div class="panel kpi"><div class="label">Remaining parts</div><div class="value" style="color:var(--amber-2)">${parts.length - delivered}</div></div>
     </div>
     <div class="panel" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span class="muted">Status</span> ${selectHTML('instances', 'status', t.status, t.id, 'tank')}
@@ -449,8 +450,8 @@ function filteredParts() {
 }
 const COLS = [
   { key: 'no', label: 'No' }, { key: 'partName', label: 'Part' }, { key: 'phase', label: 'Phase' },
-  { key: 'status', label: 'Status' }, { key: 'qtyDone', label: 'Qty' }, { key: 'reworkCount', label: 'Rework' },
-  { key: 'reworkReason', label: 'Reason' }, { key: 'assignedTo', label: 'Assignee' }, { key: 'files', label: 'Files' },
+  { key: 'status', label: 'Status' }, { key: 'deliveredQty', label: 'Qty (delivered/total)' },
+  { key: 'assignedTo', label: 'Assignee' }, { key: 'files', label: 'Files' },
 ];
 function renderTable() {
   const table = $('#ptable'); if (!table) return;
@@ -469,7 +470,7 @@ function renderTable() {
     for (const t of state.tanks) {
       const g = rows.filter((p) => p.tankId === t.id); if (!g.length) continue;
       const doneN = g.filter((p) => DONE.has(p.status)).length;
-      bodyHTML += `<tr class="group-row"><td colspan="${cols.length}">${esc(t.name || 'Untitled')} — ${doneN}/${g.length} done</td></tr>` + g.map((p) => partRow(p, cols)).join('');
+      bodyHTML += `<tr class="group-row"><td colspan="${cols.length}">${esc(t.name || 'Untitled')} — ${doneN}/${g.length} delivered</td></tr>` + g.map((p) => partRow(p, cols)).join('');
     }
   } else bodyHTML = rows.map((p) => partRow(p, cols)).join('');
   if (!rows.length) bodyHTML = `<tr><td colspan="${cols.length}"><div class="empty"><div class="big">▤</div>No parts match.</div></td></tr>`;
@@ -485,11 +486,11 @@ function partRow(p, cols) {
     no: `<td class="num" data-label="No"><input class="cell-edit cell-num" type="number" min="0" value="${p.no ?? ''}" data-id="${p.id}" data-field="no"/></td>`,
     partName: `<td class="pn" data-label="Part"><input class="cell-edit partname" dir="auto" type="text" value="${esc(p.description || '')}" placeholder="Part name" data-id="${p.id}" data-field="description"/><input class="cell-edit partcode" dir="auto" type="text" value="${esc(p.itemCode || '')}" placeholder="Item code" data-id="${p.id}" data-field="itemCode"/></td>`,
     tank: `<td class="muted" data-label="Tank">${esc(tank?.name || '—')}</td>`,
-    phase: `<td data-label="Phase">${selectHTML('parts', 'phase', p.phase, p.id, 'part', true)}</td>`,
+    phase: p.status === 'Delivered'
+      ? `<td data-label="Phase" class="muted" style="text-align:center">—</td>`
+      : `<td data-label="Phase">${selectHTML('parts', 'phase', p.phase, p.id, 'part', true)}</td>`,
     status: `<td data-label="Status">${selectHTML('parts', 'status', p.status, p.id, 'part')}</td>`,
-    qtyDone: `<td data-label="Qty"><div class="qbar"><input class="cell-edit cell-num" type="number" min="0" value="${p.qtyDone ?? 0}" data-id="${p.id}" data-field="qtyDone"/><span class="muted">/</span><input class="cell-edit cell-num" style="width:50px" type="number" min="0" value="${p.qtyTotal ?? 0}" data-id="${p.id}" data-field="qtyTotal"/>${bar(p.progress, p.progress === 100)}</div></td>`,
-    reworkCount: `<td data-label="Rework"><input class="cell-edit cell-num" type="number" min="0" value="${p.reworkCount ?? 0}" data-id="${p.id}" data-field="reworkCount"/></td>`,
-    reworkReason: `<td data-label="Reason">${selectHTML('parts', 'reworkReason', p.reworkReason, p.id, 'part', true)}</td>`,
+    deliveredQty: `<td data-label="Qty" title="delivered / total"><div class="qbar"><input class="cell-edit cell-num" type="number" min="0" max="${p.qtyTotal ?? 0}" value="${p.deliveredQty ?? 0}" data-id="${p.id}" data-field="deliveredQty"/><span class="muted">/</span><input class="cell-edit cell-num" style="width:50px" type="number" min="0" value="${p.qtyTotal ?? 0}" data-id="${p.id}" data-field="qtyTotal"/>${bar(p.progress, p.progress === 100)}</div></td>`,
     assignedTo: `<td data-label="Assignee"><input class="cell-edit" type="text" list="assigneeList" autocomplete="off" value="${esc(p.assignedTo || '')}" placeholder="—" data-id="${p.id}" data-field="assignedTo"/></td>`,
     files: `<td class="act" data-label="Files"><button class="file-pill ${fc ? '' : 'none'}" data-files="${p.id}">📎 ${fc || '0'}</button></td>`,
   };
@@ -506,8 +507,11 @@ async function onPartEdit(e) {
     const i = state.parts.findIndex((p) => p.id === id); if (i >= 0) state.parts[i] = fresh;
     td.classList.remove('saving'); td.classList.add('saved');
     if (field === 'assignedTo') await rememberAssignee(value);
-    // itemCode changes fileCount; no/description affect sort/group/search
-    if (['qtyDone', 'qtyTotal', 'status', 'itemCode', 'no', 'description'].includes(field)) renderTable();
+    // status flip locks/unlocks the phase cell and can drop the row from a list;
+    // qty/itemCode/no/description affect sort/group/search. Re-render the view.
+    if (['deliveredQty', 'qtyTotal', 'status', 'itemCode', 'no', 'description'].includes(field)) {
+      if (state.route === 'parts') renderTable(); else render();
+    }
   } catch (err) { td.classList.remove('saving'); td.classList.add('error'); toast('Save failed: ' + err.message, 'err'); }
 }
 
@@ -886,26 +890,6 @@ function uploadFilesTo(tt) {
   wireDrag(body.querySelector('#dz'), doUpload, true);
 }
 
-// ── Rework ────────────────────────────────────────────────────
-function renderRework() {
-  const reworked = state.parts.filter((p) => (p.reworkCount ?? 0) > 0 || p.status === 'Rework');
-  const byReason = countBy(reworked, 'reworkReason', (state.options.parts.reworkReason || []).map((o) => o.name)).filter((e) => e.n > 0);
-  const byPhase = countBy(reworked, 'phase', (state.options.parts.phase || []).map((o) => o.name)).filter((e) => e.n > 0);
-  const totalRe = reworked.reduce((s, p) => s + (p.reworkCount || 0), 0);
-  const list = reworked.sort((a, b) => (b.reworkCount || 0) - (a.reworkCount || 0)).map((p) => {
-    const tank = tankById(p.tankId);
-    return `<tr><td class="num muted">${p.no ?? ''}</td><td><div class="partname">${esc(p.partName || p.itemCode)}</div><div class="partcode">${esc(tank?.name || '')}</div></td><td>${chip(p.status)}</td><td class="num" style="color:var(--red)">${p.reworkCount || 0}×</td><td>${esc(p.reworkReason || '—')}</td><td class="muted">${esc(p.assignedTo || '—')}</td></tr>`;
-  }).join('') || `<tr><td colspan="6"><div class="empty"><div class="big">↻</div>No rework logged.</div></td></tr>`;
-  view().innerHTML = `
-    <div class="grid kpis" style="grid-template-columns:repeat(3,1fr)">
-      <div class="panel kpi"><div class="label">Parts reworked</div><div class="value" style="color:var(--red)">${reworked.length}</div></div>
-      <div class="panel kpi"><div class="label">Total rework events</div><div class="value">${totalRe}</div></div>
-      <div class="panel kpi"><div class="label">Rework rate</div><div class="value">${state.parts.length ? Math.round((reworked.length / state.parts.length) * 100) : 0}<small>%</small></div></div>
-    </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr"><div class="panel"><h3>By reason</h3>${statBars(byReason) || '<div class="muted">None.</div>'}</div><div class="panel"><h3>By phase</h3>${statBars(byPhase) || '<div class="muted">None.</div>'}</div></div>
-    <div style="margin-top:16px" class="table-wrap"><table><thead><tr><th>No</th><th>Part / Tank</th><th>Status</th><th>Count</th><th>Reason</th><th>Assignee</th></tr></thead><tbody>${list}</tbody></table></div>`;
-}
-
 // ── New tank ──────────────────────────────────────────────────
 function renderNew() {
   const types = state.tankTypes.filter((t) => t.partCount > 0);
@@ -971,16 +955,14 @@ async function renderDailyTab() {
     return `<tr>
     <td class="num muted" data-label="No">${p.no ?? ''}</td>
     <td class="pn" data-label="Part"><div class="partname">${esc(p.partName || p.itemCode)}</div><div class="partcode">${esc(p.itemCode || '')}</div></td>
-    <td data-label="Phase">${selectHTML('parts', 'phase', p.phase, p.partId, 'part', true)}</td>
-    <td data-label="Status">${selectHTML('parts', 'status', p.status, p.partId, 'part')}</td>
-    <td data-label="Progress"><div class="qbar"><span class="muted" style="min-width:42px">${p.qtyDone}/${p.qtyTotal}</span>${bar(p.progress, p.progress === 100)}</div></td>
-    <td class="num muted" data-label="Delivered" title="delivered / total">${p.deliveredQty || 0}/${p.qtyTotal || 0}</td>
+    <td data-label="Phase">${p.status === 'Delivered' ? '<span class="muted">—</span>' : selectHTML('parts', 'phase', p.phase, p.partId, 'part', true)}</td>
+    <td data-label="Delivered" title="delivered / total"><div class="qbar"><span class="muted" style="min-width:42px">${p.deliveredQty || 0}/${p.qtyTotal || 0}</span>${bar(p.progress, p.progress === 100)}</div></td>
     <td data-label="Deliver qty"><input class="cell-edit cell-num fu-deliv" type="number" min="0" value="${p.deliveredToday ?? ''}" placeholder="0" data-part="${p.partId}" title="Delivered this day · ${remaining} remaining"/></td>
     <td data-label="Note"><input class="cell-edit fu-note" type="text" value="${esc(p.log?.note || '')}" placeholder="note…" data-part="${p.partId}"/></td>
   </tr>`; }).join('');
   box.innerHTML = head + `
     <div class="table-wrap"><table class="cards">
-      <thead><tr><th>No</th><th>Part</th><th>Phase</th><th>Status</th><th>Progress</th><th title="delivered / total">Delivered</th><th>Deliver qty</th><th>Note</th></tr></thead>
+      <thead><tr><th>No</th><th>Part</th><th>Phase</th><th title="delivered / total">Delivered</th><th>Deliver qty</th><th>Note</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     ${assigneeDatalist()}`;
   wirePhase();
@@ -1039,16 +1021,12 @@ async function renderReports() {
       <div class="panel"><h3>Tanks — on-time vs overdue</h3>${onTimeChart(r.tanksOnTime)}</div>
     </div>
     <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:16px">
-      <div class="panel"><h3>Status breakdown</h3>${statBars(r.status.map((e) => ({ ...e, chip: true }))) || emptyMsg()}</div>
+      <div class="panel"><h3>Delivery status</h3>${statBars(r.status.map((e) => ({ ...e, chip: true }))) || emptyMsg()}</div>
       <div class="panel"><h3>Pipeline — open parts by phase</h3>${statBars(r.phasePipeline) || emptyMsg('Nothing in progress')}</div>
     </div>
     <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:16px">
       <div class="panel"><h3>Workload per assignee</h3>${workloadBars(r.workload)}</div>
       <div class="panel"><h3>Progress per tank</h3>${r.perTank.map(perTankRow).join('') || emptyMsg()}</div>
-    </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:16px">
-      <div class="panel"><h3>Rework by reason</h3>${statBars(r.reworkByReason) || emptyMsg('No rework logged 🎉')}</div>
-      <div class="panel"><h3>Rework by phase</h3>${statBars(r.reworkByPhase) || emptyMsg('No rework logged 🎉')}</div>
     </div>
     <div class="panel" style="margin-top:16px">
       <div class="row-between"><h3 style="margin:0">Recent activity (audit log)</h3><input id="actSearch" class="search" type="search" placeholder="Filter log…" style="width:200px"/></div>
@@ -1120,8 +1098,6 @@ function renderSettings() {
         <label class="muted" style="align-self:center">Field</label>
         <select id="optField">
           <option value="phase">Phase</option>
-          <option value="status">Part status</option>
-          <option value="reworkReason">Rework reason</option>
           <option value="tankStatus">Tank status</option>
           <option value="priority">Priority</option>
           <option value="assignee">Assignee</option>
@@ -1237,12 +1213,7 @@ async function renderShare() {
       <div class="hint" style="margin-top:6px">Turn it on to share from anywhere. First time downloads a small helper (~50&nbsp;MB), once.</div></div>`;
   }
 
-  view().innerHTML = `
-    <div class="tabs" id="shareModeTabs" style="margin-bottom:14px">
-      <button class="tab ${isEd ? 'on' : ''}" data-m="editor">✏ Editor — can edit</button>
-      <button class="tab ${!isEd ? 'on' : ''}" data-m="viewer">👁 Viewer — read-only</button>
-    </div>
-    <div class="grid" style="grid-template-columns:1.1fr .9fr">
+  const linkCard = on ? `
       <div class="panel access-card">
         <h3>${isEd ? '✏ Editor link & QR' : '👁 Viewer link & QR'}</h3>
         <p class="guide-p" style="margin-top:-4px">${isEd
@@ -1250,26 +1221,33 @@ async function renderShare() {
           : 'Whoever opens this and enters the <b>viewer password</b> can <b>only view</b> — no edits, ever.'}</p>
         <div class="share-link"><input readonly value="${esc(link?.url || '')}"/><button class="btn sm" data-copy="${esc(link?.url || '')}">Copy link</button></div>
         <div class="share-qr">${link?.qr || '<div class="muted" style="padding:20px">QR unavailable</div>'}</div>
-        <div class="hint" style="margin-top:8px">${on ? 'Public link — works from any network.' : 'Works on the same Wi-Fi. Enable the public link below to share anywhere.'}</div>
-      </div>
+        <div class="hint" style="margin-top:8px">Public link — works from any network.</div>
+      </div>` : '';
+  const pwPanel = `
       <div class="panel">
         <h3>${isEd ? 'Editor password' : 'Viewer password'}</h3>
         <p class="guide-p" style="margin-top:-4px">People opening the <b>${mode}</b> link must enter this password first.</p>
         <div class="share-link"><input id="pwField" type="text" value="${esc(curPw)}" placeholder="set a password"/><button class="btn sm" id="savePw">Save</button></div>
         <div class="hint">At least 3 characters. Changing it doesn't sign out anyone already in.</div>
-      </div>
+      </div>`;
+
+  view().innerHTML = `
+    <div class="toggle" id="shareModeTabs" style="margin-bottom:14px">
+      <button class="${isEd ? 'on' : ''}" data-m="editor">✏ Editor — can edit</button>
+      <button class="${!isEd ? 'on' : ''}" data-m="viewer">👁 Viewer — read-only</button>
     </div>
+    ${on ? `<div class="grid" style="grid-template-columns:1.1fr .9fr">${linkCard}${pwPanel}</div>` : pwPanel}
     ${tunnelPanel}
     <div class="panel" style="margin-top:16px"><h3>How sharing works</h3>
       <ol class="guide-ol">
         <li>Keep this host PC running the app (it holds the data).</li>
-        <li>Pick <b>Editor</b> or <b>Viewer</b> above, set its password, then send that link/QR to the right people.</li>
-        <li>They open the link → enter the password → they're in at that level. Edits sync to everyone within ~3 seconds.</li>
+        <li>Turn on <b>Enable public access</b>, choose <b>Editor</b> or <b>Viewer</b>, set its password, then send that link/QR.</li>
+        <li>They open the link → enter the password → they're in at that level. Edits sync within ~3 seconds.</li>
       </ol>
-      <div class="hint">View-only is enforced on the server — a viewer genuinely cannot change anything, through any screen. Everyone shares one database on this PC.</div>
+      <div class="hint">View-only is enforced on the server — a viewer genuinely cannot change anything. The link &amp; QR appear once public access is on.</div>
     </div>`;
 
-  view().querySelectorAll('#shareModeTabs .tab').forEach((b) => b.onclick = () => { state.shareMode = b.dataset.m; renderShare(); });
+  view().querySelectorAll('#shareModeTabs button').forEach((b) => b.onclick = () => { state.shareMode = b.dataset.m; renderShare(); });
   view().querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); toast('Link copied', 'ok'); });
   const sp = $('#savePw');
   if (sp) sp.onclick = async () => {
@@ -1301,7 +1279,7 @@ function renderGuide() {
       <div class="panel"><h3>How the app is built</h3>
         <p class="guide-p"><b>Tank Types</b> = reusable templates (the parts checklist + each part's PDF/photo). Build once per product.</p>
         <p class="guide-p"><b>Tanks</b> = real orders. Creating one <b>clones</b> the type's checklist into its own tracking rows.</p>
-        <p class="guide-p"><b>Parts</b> = the live tracking — phase, status, quantities, rework, assignee — per tank, isolated from the template.</p>
+        <p class="guide-p"><b>Parts</b> = the live tracking — phase, delivered quantity, assignee — per tank, isolated from the template. A part is <b>Delivered</b> the moment its delivered qty reaches its total (and vice-versa).</p>
         <p class="guide-p"><b>Follow-up</b> = daily work + weekly delivered quantities. <b>Reports</b> = the numbers. <b>Settings</b> = edit dropdowns + backups.</p>
       </div>
       <div class="panel" style="border-color:rgba(229,83,75,.4)"><h3 style="color:var(--red)">🛡 Golden rules — never lose data</h3>
@@ -1317,8 +1295,8 @@ function renderGuide() {
     <div class="panel" style="margin-top:16px"><h3>Daily way of working (rule of thumb)</h3>
       <ol class="guide-ol">
         <li><b>Morning:</b> Follow-up → pick the tank → today's date. Use the <b>phase filter</b> to work one stage at a time (e.g. everything in Welding).</li>
-        <li>For each part: set its <b>Phase</b> and <b>Status</b>, type a short <b>Note</b>, and when units actually ship enter <b>Deliver qty</b>. Hit <b>Save day</b>.</li>
-        <li><b>Status flow:</b> Not Started → In Progress → (Rework if a defect) → Done. Mark <b>Delivered</b> only when it leaves to the customer.</li>
+        <li>For each part: set its <b>Phase</b>, type a short <b>Note</b>, and when units actually ship enter <b>Deliver qty</b>. Hit <b>Save day</b>.</li>
+        <li><b>Status is automatic:</b> a part flips to <b>Delivered</b> when its delivered qty reaches the total (toggling the status by hand syncs the qty). While Not Delivered it moves through phases.</li>
         <li><b>Weekly:</b> Follow-up → Weekly rollup shows quantity delivered per week; <b>⤓ CSV</b> exports it.</li>
       </ol>
     </div>
@@ -1327,9 +1305,8 @@ function renderGuide() {
       <table class="guide-table"><tbody>
         <tr><td><b>New product</b></td><td>Tank Types → <i>New from file</i> (Excel/Word/PDF/CSV — or Blank + Add parts) → <i>Upload files</i> (PDFs/images named by item code) → open a part's 📎 → <b>Crop &amp; save</b> the 3D view as its photo.</td></tr>
         <tr><td><b>New order</b></td><td>New Tank → pick the type → the whole checklist is cloned automatically.</td></tr>
-        <tr><td><b>A part fails QC</b></td><td>Set Status = <b>Rework</b>, bump <b>Rework count</b>, choose a reason. It shows in Reports → Rework.</td></tr>
         <tr><td><b>Partial delivery</b></td><td>Ship some now: enter <b>Deliver qty</b>; the remaining units keep moving through phases. Weekly rollup sums what was delivered.</td></tr>
-        <tr><td><b>Fix a phase/status name</b></td><td>Settings → Rename — it updates every part using it. <b>Don't rename Done/Delivered</b> (reserved by the math).</td></tr>
+        <tr><td><b>Fix a phase name</b></td><td>Settings → Rename — it updates every part using it. (Part status is fixed: Delivered / Not Delivered.)</td></tr>
         <tr><td><b>Edit one tank only</b></td><td>Change a part's code/name/qty in the Parts table — it affects <b>only that tank</b>, never the template.</td></tr>
         <tr><td><b>Customer parts list</b></td><td>Tank Types → open the type → <b>📊 Export Excel</b> (with the cropped photos embedded).</td></tr>
         <tr><td><b>"Who changed what?"</b></td><td>Reports → <b>Recent activity</b> — every change, delivery, file and rename is logged. Use the filter box.</td></tr>

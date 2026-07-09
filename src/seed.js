@@ -11,8 +11,8 @@ const uid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
 const DEFAULT_OPTIONS = {
-  status: ['Not Started', 'In Progress', 'Rework', 'Done', 'Blocked'],
-  phase: ['Manefacturing', 'Welding', 'Sand Blast', 'Painting', 'Finish', 'Visual', 'Delivered'],
+  status: ['Not Delivered', 'Delivered'],
+  phase: ['Manefacturing', 'Welding', 'Sand Blast', 'Painting', 'Finish', 'Visual'],
   priority: ['High', 'Normal', 'Low'],
   reworkReason: ['Wrong dimensions', 'Weld defect', 'Paint defect', 'Material flaw', 'Assembly error', 'Other'],
   tankStatus: ['Not Started', 'In Progress', 'On Hold', 'Done', 'Delivered'],

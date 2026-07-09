@@ -19,12 +19,11 @@ const APP_VERSION = JSON.parse(fs.readFileSync(join(ROOT, 'package.json'), 'utf8
 const PORT = process.env.PORT || 4200;
 const uid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
-const DONE = new Set(['Done', 'Delivered']);
-
-// A part counts as "delivered" if its status is terminal OR it reached the
-// Delivered phase. Single source of truth — used by the delivered_at trigger,
-// the daily worksheet filter, the weekly rollup and the reports aggregation.
-const isDeliveredPart = (p) => DONE.has(p.status) || p.phase === 'Delivered';
+// A part counts as "delivered" once its delivered quantity reaches its total.
+// This is the SINGLE SOURCE OF TRUTH: the part's status ("Delivered" / "Not
+// Delivered") is derived from it, and it drives the delivered_at trigger, the
+// daily worksheet filter, the weekly rollup, KPIs and the reports aggregation.
+const isDeliveredPart = (p) => (p.qty_total || 0) > 0 && (p.delivered_qty || 0) >= p.qty_total;
 
 // write a human-readable audit entry (no persist here — caller flushes)
 function logActivity(category, summary, opts = {}) {
@@ -88,35 +87,36 @@ const OPTION_TARGETS = {
   assignee: [['parts', 'assigned_to']],
 };
 const OPTION_FIELDS = new Set(Object.keys(OPTION_TARGETS));
-// values that are wired into code (the DONE set) and must not be renamed/deleted
-const RESERVED = { status: new Set(['Done', 'Delivered']), tankStatus: new Set(['Done', 'Delivered']) };
+// values wired into code that must not be renamed/deleted. Part status is a fixed
+// two-state (Not Delivered / Delivered) derived from delivered quantity.
+const RESERVED = { status: new Set(['Not Delivered', 'Delivered']), tankStatus: new Set(['Done', 'Delivered']) };
 const countUsage = (field, value) =>
   (OPTION_TARGETS[field] || []).reduce((s, [t, c]) => s + (get(`SELECT COUNT(*) c FROM ${t} WHERE ${c}=?`, [value])?.c || 0), 0);
 
 // ── mappers ───────────────────────────────────────────────────
+// Progress IS delivery progress — the single merged quantity (delivered / total).
 const partProgress = (p) => {
-  if (DONE.has(p.status)) return 100;
-  if (p.qty_total > 0) return Math.round((p.qty_done / p.qty_total) * 100);
+  if (isDeliveredPart(p)) return 100;
+  if (p.qty_total > 0) return Math.round(((p.delivered_qty || 0) / p.qty_total) * 100);
   return 0;
 };
 function mapPart(p) {
   return {
     id: p.id, tankId: p.tank_id, itemCode: p.item_code, partName: p.description || p.item_code,
-    no: p.no, qtyTotal: p.qty_total, qtyDone: p.qty_done, progress: partProgress(p),
-    description: p.description, phase: p.phase, status: p.status, deliveredAt: p.delivered_at, deliveredQty: p.delivered_qty || 0,
-    reworkCount: p.rework_count, reworkReason: p.rework_reason, assignedTo: p.assigned_to, notes: p.notes,
+    no: p.no, qtyTotal: p.qty_total, progress: partProgress(p),
+    description: p.description, phase: p.phase, status: isDeliveredPart(p) ? 'Delivered' : 'Not Delivered', deliveredAt: p.delivered_at, deliveredQty: p.delivered_qty || 0,
+    assignedTo: p.assigned_to, notes: p.notes,
     fileCount: get('SELECT COUNT(*) c FROM part_files WHERE tank_type_id=(SELECT tank_type_id FROM tanks WHERE id=?) AND item_code=?', [p.tank_id, p.item_code])?.c || 0,
   };
 }
 function tankSummary(t) {
-  const parts = all('SELECT status, qty_total, qty_done, rework_count FROM parts WHERE tank_id=?', [t.id]);
+  const parts = all('SELECT status, qty_total, delivered_qty FROM parts WHERE tank_id=?', [t.id]);
   const total = parts.length;
-  const done = parts.filter((p) => DONE.has(p.status)).length;
-  const reworkParts = parts.filter((p) => p.rework_count > 0 || p.status === 'Rework').length;
+  const done = parts.filter(isDeliveredPart).length;
   return {
     id: t.id, name: t.name, client: t.client, tankType: t.tank_type_name, tankTypeId: t.tank_type_id,
     status: t.status, priority: t.priority, startDate: t.start_date, deliveryDate: t.delivery_date, notes: t.notes,
-    partsTotal: total, partsDone: done, reworkParts, completion: total ? Math.round((done / total) * 100) : 0,
+    partsTotal: total, partsDone: done, completion: total ? Math.round((done / total) * 100) : 0,
   };
 }
 function tankTypeSummary(tt) {
@@ -250,13 +250,43 @@ app.get('/api/backup', (req, res) => res.json({ last: lastBackup, configured: pr
 app.post('/api/backup', (req, res) => res.json(runBackup('manual')));
 
 // ── parts ─────────────────────────────────────────────────────
-const PART_FIELDS = { status: 'status', phase: 'phase', qtyDone: 'qty_done', qtyTotal: 'qty_total', reworkCount: 'rework_count', reworkReason: 'rework_reason', assignedTo: 'assigned_to', notes: 'notes', description: 'description', no: 'no', itemCode: 'item_code' };
-const PART_LOGGED = [['status', 'status', 'Status'], ['phase', 'phase', 'Phase'], ['qtyDone', 'qty_done', 'Qty done'], ['qtyTotal', 'qty_total', 'Qty total'], ['reworkCount', 'rework_count', 'Rework count'], ['reworkReason', 'rework_reason', 'Rework reason'], ['assignedTo', 'assigned_to', 'Assignee'], ['description', 'description', 'Description'], ['itemCode', 'item_code', 'Item code'], ['no', 'no', 'No']];
+// status is derived from delivered quantity (handled specially below), so it is
+// NOT a directly-written column here.
+const PART_FIELDS = { phase: 'phase', qtyTotal: 'qty_total', assignedTo: 'assigned_to', notes: 'notes', description: 'description', no: 'no', itemCode: 'item_code' };
+const PART_LOGGED = [['phase', 'phase', 'Phase'], ['qtyTotal', 'qty_total', 'Qty total'], ['assignedTo', 'assigned_to', 'Assignee'], ['description', 'description', 'Description'], ['itemCode', 'item_code', 'Item code'], ['no', 'no', 'No']];
 app.patch('/api/parts/:id', (req, res) => {
   const p = get('SELECT * FROM parts WHERE id=?', [req.params.id]);
   if (!p) return res.status(404).json({ error: 'Part not found' });
   const body = req.body || {};
   tx(() => {
+    // 0) Delivered / Not-Delivered toggle → translate to delivery quantity so the
+    //    running qty and the weekly rollup stay consistent (status is derived).
+    if ('status' in body) {
+      const total = p.qty_total || 0;
+      if (String(body.status) === 'Delivered') {
+        const sum = get('SELECT COALESCE(SUM(qty),0) s FROM deliveries WHERE part_id=?', [p.id]).s;
+        const delta = total - sum;
+        if (delta > 0) run('INSERT INTO deliveries(id,part_id,tank_id,qty,delivered_date,created_at) VALUES (?,?,?,?,?,?)', [uid(), p.id, p.tank_id, delta, now().slice(0, 10), now()]);
+        run('UPDATE parts SET delivered_qty=? WHERE id=?', [total, p.id]);
+      } else {
+        run('DELETE FROM deliveries WHERE part_id=?', [p.id]);
+        run('UPDATE parts SET delivered_qty=0 WHERE id=?', [p.id]);
+      }
+      logActivity('delivery', String(body.status) === 'Delivered' ? 'Marked delivered' : 'Marked not delivered', { tank: tankName(p.tank_id), itemCode: p.item_code });
+      delete body.status;
+    }
+    // 0b) direct edit of the delivered count (the single merged qty field).
+    //     The delta vs the delivery history is logged as today's delivery (a
+    //     decrease becomes a negative correction) so the weekly rollup stays true.
+    if ('deliveredQty' in body) {
+      const total = 'qtyTotal' in body ? Math.max(0, Number(body.qtyTotal) || 0) : (p.qty_total || 0);
+      const want = Math.max(0, Math.min(total, Number(body.deliveredQty) || 0));
+      const sum = get('SELECT COALESCE(SUM(qty),0) s FROM deliveries WHERE part_id=?', [p.id]).s;
+      if (want - sum !== 0) run('INSERT INTO deliveries(id,part_id,tank_id,qty,delivered_date,created_at) VALUES (?,?,?,?,?,?)', [uid(), p.id, p.tank_id, want - sum, now().slice(0, 10), now()]);
+      run('UPDATE parts SET delivered_qty=? WHERE id=?', [want, p.id]);
+      if (want !== (p.delivered_qty || 0)) logActivity('delivery', `Delivered qty: ${p.delivered_qty || 0} → ${want}`, { tank: tankName(p.tank_id), itemCode: p.item_code });
+      delete body.deliveredQty;
+    }
     // 1) field changes (same mapping applyPatch uses, but no inner persist —
     //    delivered_at is NEVER taken from the client, so it's not in PART_FIELDS)
     const sets = [], vals = [];
@@ -264,11 +294,22 @@ app.patch('/api/parts/:id', (req, res) => {
       if (apiKey in body) { sets.push(`${col}=?`); vals.push(body[apiKey] === undefined ? null : body[apiKey]); }
     }
     if (sets.length) { vals.push(p.id); run(`UPDATE parts SET ${sets.join(',')} WHERE id=?`, vals); }
-    // 2) delivered_at trigger (server-computed, both directions)
+    // 2) derived-state sync (server-computed, both directions): the stored status
+    //    column and delivered_at always follow the delivered/total quantities, so
+    //    raw-row consumers (exports, daily filter) can never disagree with the UI.
     const fresh = get('SELECT * FROM parts WHERE id=?', [p.id]);
-    const was = isDeliveredPart(p), is = isDeliveredPart(fresh);
-    if (is && !was && !fresh.delivered_at) run('UPDATE parts SET delivered_at=? WHERE id=?', [now(), p.id]);
-    else if (was && !is) run('UPDATE parts SET delivered_at=NULL WHERE id=?', [p.id]);
+    if ((fresh.delivered_qty || 0) > (fresh.qty_total || 0)) { // total lowered below delivered → clamp with a correction
+      const cap = fresh.qty_total || 0;
+      const sum = get('SELECT COALESCE(SUM(qty),0) s FROM deliveries WHERE part_id=?', [p.id]).s;
+      if (cap - sum !== 0) run('INSERT INTO deliveries(id,part_id,tank_id,qty,delivered_date,created_at) VALUES (?,?,?,?,?,?)', [uid(), p.id, p.tank_id, cap - sum, now().slice(0, 10), now()]);
+      run('UPDATE parts SET delivered_qty=? WHERE id=?', [cap, p.id]);
+      fresh.delivered_qty = cap;
+    }
+    const is = isDeliveredPart(fresh);
+    const wantStatus = is ? 'Delivered' : 'Not Delivered';
+    if (fresh.status !== wantStatus) run('UPDATE parts SET status=? WHERE id=?', [wantStatus, p.id]);
+    if (is && !fresh.delivered_at) run('UPDATE parts SET delivered_at=? WHERE id=?', [now(), p.id]);
+    else if (!is && fresh.delivered_at) run('UPDATE parts SET delivered_at=NULL WHERE id=?', [p.id]);
     // 3) audit log for any tracked field that actually changed
     const tn = tankName(p.tank_id);
     for (const [apiKey, col, label] of PART_LOGGED) {
@@ -314,7 +355,7 @@ app.post('/api/tanks', (req, res) => {
   const tpl = all('SELECT * FROM template_parts WHERE tank_type_id=? ORDER BY no', [type.id]);
   for (const p of tpl) {
     run('INSERT INTO parts(id,tank_id,item_code,no,qty_total,qty_done,description,phase,status,rework_count,rework_reason,assigned_to,notes) VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?)',
-      [uid(), tankId, p.item_code, p.no, p.qty ?? 1, 0, p.description, phases.has(p.default_phase) ? p.default_phase : '', 'Not Started', '', '', '']);
+      [uid(), tankId, p.item_code, p.no, p.qty ?? 1, 0, p.description, phases.has(p.default_phase) ? p.default_phase : '', 'Not Delivered', '', '', '']);
   }
   logActivity('tank', `Created tank from type "${type.name}" (${tpl.length} parts cloned)`, { tank: name.trim() });
   persist();
@@ -395,24 +436,27 @@ app.get('/api/activity', (req, res) => {
 });
 
 // ── daily / weekly follow-up (per tank) ───────────────────────
-// Daily worksheet: parts not yet fully delivered, for one tank + date, merged
-// with that date's saved log + delivery so the sheet pre-fills. Optional phase
-// filter (?phase=Welding).
+// Daily worksheet: parts not yet fully delivered — PLUS any part that had a
+// delivery on the selected date, so a part you just completed stays visible and
+// its entry can still be corrected. Pre-fills that date's log + delivered total.
+// Optional phase filter (?phase=Welding).
 app.get('/api/tanks/:id/daily', (req, res) => {
   const t = get('SELECT * FROM tanks WHERE id=?', [req.params.id]);
   if (!t) return res.status(404).json({ error: 'Tank not found' });
   const date = (req.query.date || now().slice(0, 10));
   const phaseFilter = req.query.phase || '';
-  const all0 = all('SELECT * FROM parts WHERE tank_id=? ORDER BY no', [t.id]).filter((p) => (p.delivered_qty || 0) < (p.qty_total || 0));
+  const dayTotal = (pid) => get('SELECT COALESCE(SUM(qty),0) s FROM deliveries WHERE part_id=? AND delivered_date=?', [pid, date]).s;
+  const all0 = all('SELECT * FROM parts WHERE tank_id=? ORDER BY no', [t.id])
+    .filter((p) => (p.delivered_qty || 0) < (p.qty_total || 0) || dayTotal(p.id) > 0);
   const phases = [...new Set(all0.map((p) => p.phase).filter(Boolean))];
   const parts = all0.filter((p) => !phaseFilter || p.phase === phaseFilter).map((p) => {
     const mp = mapPart(p);
     const log = get('SELECT * FROM part_logs WHERE part_id=? AND log_date=?', [p.id, date]);
-    const dlv = get('SELECT qty FROM deliveries WHERE part_id=? AND delivered_date=?', [p.id, date]);
+    const dt = dayTotal(p.id); // SUM — the parts-table path can add several rows a day
     return {
       partId: p.id, itemCode: p.item_code, partName: mp.partName, no: p.no,
-      qtyTotal: p.qty_total, qtyDone: p.qty_done, deliveredQty: p.delivered_qty || 0, phase: p.phase, status: p.status, progress: mp.progress,
-      deliveredToday: dlv ? dlv.qty : null,
+      qtyTotal: p.qty_total, deliveredQty: p.delivered_qty || 0, phase: p.phase, status: mp.status, progress: mp.progress,
+      deliveredToday: dt !== 0 ? dt : null,
       log: log ? { qtyDoneToday: log.qty_done_today, note: log.note } : null,
     };
   });
@@ -437,17 +481,24 @@ app.post('/api/tanks/:id/daily', (req, res) => {
         else run('INSERT INTO part_logs(id,part_id,tank_id,log_date,qty_done_today,status,phase,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)', [uid(), e.partId, t.id, date, qty, '', '', note, now()]);
         saved++;
       } else if (ex) run('DELETE FROM part_logs WHERE id=?', [ex.id]);
-      // b) delivery for the day (partial delivery)
+      // b) delivery for the day (partial delivery). The entered value is THE
+      //    day's total: all of that date's rows (the parts-table path can add
+      //    several) are replaced by one row, clamped so the part's cumulative
+      //    delivered quantity can never exceed its total.
       if (e.deliveredToday !== undefined && e.deliveredToday !== null && e.deliveredToday !== '') {
-        const dq = Math.max(0, Number(e.deliveredToday) || 0);
-        const dex = get('SELECT id FROM deliveries WHERE part_id=? AND delivered_date=?', [e.partId, date]);
-        if (dq > 0) {
-          if (dex) run('UPDATE deliveries SET qty=? WHERE id=?', [dq, dex.id]);
-          else run('INSERT INTO deliveries(id,part_id,tank_id,qty,delivered_date,created_at) VALUES (?,?,?,?,?,?)', [uid(), e.partId, t.id, dq, date, now()]);
-        } else if (dex) run('DELETE FROM deliveries WHERE id=?', [dex.id]);
-        const sum = get('SELECT COALESCE(SUM(qty),0) s FROM deliveries WHERE part_id=?', [e.partId]).s;
-        run('UPDATE parts SET delivered_qty=? WHERE id=?', [sum, e.partId]);
-        if (dq > 0) logActivity('delivery', `Delivered ${dq} on ${date}`, { tank: t.name, itemCode: get('SELECT item_code FROM parts WHERE id=?', [e.partId])?.item_code || '' });
+        const part = get('SELECT * FROM parts WHERE id=? AND tank_id=?', [e.partId, t.id]);
+        if (!part) continue;
+        const otherDays = get('SELECT COALESCE(SUM(qty),0) s FROM deliveries WHERE part_id=? AND delivered_date!=?', [e.partId, date]).s;
+        const maxToday = Math.max(0, (part.qty_total || 0) - otherDays);
+        const dq = Math.min(maxToday, Math.max(0, Number(e.deliveredToday) || 0));
+        run('DELETE FROM deliveries WHERE part_id=? AND delivered_date=?', [e.partId, date]);
+        if (dq > 0) run('INSERT INTO deliveries(id,part_id,tank_id,qty,delivered_date,created_at) VALUES (?,?,?,?,?,?)', [uid(), e.partId, t.id, dq, date, now()]);
+        run('UPDATE parts SET delivered_qty=? WHERE id=?', [otherDays + dq, e.partId]);
+        // keep the derived state in sync (status + delivered_at follow the qty)
+        const fp = get('SELECT * FROM parts WHERE id=?', [e.partId]);
+        const isD = isDeliveredPart(fp);
+        run('UPDATE parts SET status=?, delivered_at=? WHERE id=?', [isD ? 'Delivered' : 'Not Delivered', isD ? (fp.delivered_at || now()) : null, e.partId]);
+        if (dq > 0) logActivity('delivery', `Delivered ${dq} on ${date}`, { tank: t.name, itemCode: fp?.item_code || '' });
         saved++;
       }
     }
@@ -480,14 +531,12 @@ app.get('/api/reports', (req, res) => {
   const parts = all('SELECT * FROM parts');
   const tanks = all('SELECT * FROM tanks ORDER BY created_at DESC');
   const total = parts.length, done = parts.filter(isDeliveredPart).length;
-  const reworkParts = parts.filter((p) => (p.rework_count || 0) > 0 || p.status === 'Rework').length;
 
   const optVals = (field) => all('SELECT value FROM options WHERE field=? ORDER BY sort', [field]).map((o) => o.value);
   const cnt = (arr, keyFn) => { const m = new Map(); for (const x of arr) { const k = keyFn(x); if (!k) continue; m.set(k, (m.get(k) || 0) + 1); } return m; };
   const ordered = (m, ord) => { const keys = ord.filter((k) => m.has(k)); for (const k of m.keys()) if (!keys.includes(k)) keys.push(k); return keys.map((name) => ({ name, n: m.get(name) })); };
 
   const open = parts.filter((p) => !isDeliveredPart(p));
-  const reworked = parts.filter((p) => (p.rework_count || 0) > 0);
   const wl = new Map();
   for (const p of parts) { const a = (p.assigned_to || '').trim(); if (!a) continue; const o = wl.get(a) || { name: a, open: 0, done: 0, total: 0 }; isDeliveredPart(p) ? o.done++ : o.open++; o.total++; wl.set(a, o); }
 
@@ -513,12 +562,10 @@ app.get('/api/reports', (req, res) => {
   }
 
   res.json({
-    overall: { partsTotal: total, partsDone: done, completion: total ? Math.round((done / total) * 100) : 0, reworkParts },
+    overall: { partsTotal: total, partsDone: done, completion: total ? Math.round((done / total) * 100) : 0 },
     perTank,
-    status: ordered(cnt(parts, (p) => p.status), optVals('status')),
+    status: ordered(cnt(parts, (p) => (isDeliveredPart(p) ? 'Delivered' : 'Not Delivered')), optVals('status')),
     phasePipeline: ordered(cnt(open, (p) => p.phase), optVals('phase')).filter((e) => e.n > 0),
-    reworkByReason: ordered(cnt(reworked, (p) => p.rework_reason), optVals('reworkReason')).filter((e) => e.n > 0),
-    reworkByPhase: ordered(cnt(reworked, (p) => p.phase), optVals('phase')).filter((e) => e.n > 0),
     workload: [...wl.values()].sort((a, b) => b.total - a.total),
     tanksOnTime: { onTime, overdue, noDate, delivered },
     throughput,
@@ -709,10 +756,12 @@ function tankReportHtml(tank, parts, mode) {
   const delivered = parts.filter(isDelivered).length;
   const rows = parts.map((p) => {
     const dq = p.delivered_qty || 0, qt = p.qty_total || 0;
-    const g = isDelivered(p) ? ' g' : '';
+    const isD = isDelivered(p);
+    const g = isD ? ' g' : '';
+    // status is derived from the quantities; phase only applies while not delivered
     return `<tr><td class="c">${escHtml(p.no ?? '')}</td><td class="c code">${escHtml(p.item_code || '')}</td>`
-      + `<td class="desc" dir="auto">${escHtml(p.description || '')}</td><td class="c">${escHtml(p.phase || '')}</td>`
-      + `<td class="c">${escHtml(p.status || '')}</td><td class="c qty${g}">${dq}/${qt}</td></tr>`;
+      + `<td class="desc" dir="auto">${escHtml(p.description || '')}</td><td class="c">${isD ? '—' : escHtml(p.phase || '')}</td>`
+      + `<td class="c${g}">${isD ? 'Delivered' : 'Not Delivered'}</td><td class="c qty${g}">${dq}/${qt}</td></tr>`;
   }).join('');
   const imgs = tankProofImages(tank.id);
   const proofs = imgs.length
@@ -732,7 +781,7 @@ function tankReportHtml(tank, parts, mode) {
  table{border-collapse:collapse;width:100%;} th,td{border:1px solid #000;padding:6px 9px;font-size:14px;vertical-align:middle;}
  th{background:#f2f2f2;font-weight:bold;font-size:13px;text-align:center;}
  td.c{text-align:center;} td.code{font-family:Consolas,monospace;} td.desc{line-height:1.35;}
- td.qty{font-weight:700;font-variant-numeric:tabular-nums;} td.qty.g{color:#1a9c33;}
+ td.qty{font-weight:700;font-variant-numeric:tabular-nums;} td.g{color:#1a9c33;}
  .proofs{display:flex;flex-wrap:wrap;gap:14px;} .proofs figure{margin:0;width:300px;}
  .proofs img{width:100%;border:1px solid #ccc;border-radius:6px;}
  .proofs figcaption{font-size:11px;color:#666;margin-top:4px;word-break:break-all;}
@@ -779,11 +828,14 @@ app.get('/api/tanks/:id/report.xlsx', async (req, res) => {
   let r = 5;
   for (const p of parts) {
     const dq = p.delivered_qty || 0, qt = p.qty_total || 0;
+    const isD = isDelivered(p);
     const row = ws.getRow(r);
-    row.values = [p.no ?? '', p.item_code || '', p.description || '', p.phase || '', p.status || '', `${dq}/${qt}`];
+    // status derived from quantities; phase only applies while not delivered
+    row.values = [p.no ?? '', p.item_code || '', p.description || '', isD ? '—' : (p.phase || ''), isD ? 'Delivered' : 'Not Delivered', `${dq}/${qt}`];
     row.getCell(1).alignment = { horizontal: 'center' };
     row.getCell(3).alignment = { horizontal: 'left', wrapText: true, readingOrder: 'rtl' };
-    const q = row.getCell(6); q.alignment = { horizontal: 'center' }; q.font = { bold: true, color: { argb: isDelivered(p) ? 'FF1A9C33' : 'FF000000' } };
+    const st = row.getCell(5); st.alignment = { horizontal: 'center' }; if (isD) st.font = { color: { argb: 'FF1A9C33' } };
+    const q = row.getCell(6); q.alignment = { horizontal: 'center' }; q.font = { bold: true, color: { argb: isD ? 'FF1A9C33' : 'FF000000' } };
     row.eachCell((c) => { c.border = box; });
     r++;
   }

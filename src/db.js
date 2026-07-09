@@ -3,6 +3,7 @@
 // flushed to data/app.sqlite after every mutation.
 import initSqlJs from 'sql.js';
 import fs from 'fs';
+import crypto from 'crypto';
 import { DB_PATH, SQLJS_WASM_DIR, ensureDirs } from './paths.js';
 import { join } from 'path';
 
@@ -107,6 +108,39 @@ function migrate() {
          (SELECT t.delivery_date FROM tanks t WHERE t.id = parts.tank_id),
          (SELECT v FROM meta WHERE k='migrated_at'))
        WHERE delivered_at IS NULL AND (status IN ('Done','Delivered') OR phase = 'Delivered')`);
+
+  // One-time: switch to the two-state Delivered / Not-Delivered model where the
+  // status is DERIVED from delivered quantity. Runs only on an existing install
+  // (fresh installs get the new defaults straight from the seeder).
+  if (!get("SELECT v FROM meta WHERE k='delivery_status_v1'")) {
+    const hasData = get('SELECT COUNT(*) c FROM options').c > 0;
+    if (hasData) {
+      const stamp = get("SELECT v FROM meta WHERE k='migrated_at'")?.v || new Date().toISOString();
+      // Parts that were delivered before (old phase 'Delivered' or status Done/Delivered)
+      // → top delivered_qty up to total, logging the delta as a delivery on their
+      //   delivery date so the weekly rollup stays accurate.
+      const oldDelivered = all(`SELECT id, tank_id, COALESCE(qty_total,0) total, COALESCE(delivered_qty,0) dq, delivered_at
+         FROM parts WHERE status IN ('Done','Delivered') OR phase = 'Delivered'`);
+      for (const p of oldDelivered) {
+        const delta = p.total - p.dq;
+        if (delta > 0) {
+          const date = String(p.delivered_at || stamp).slice(0, 10);
+          run('INSERT INTO deliveries(id,part_id,tank_id,qty,delivered_date,created_at) VALUES (?,?,?,?,?,?)',
+            [crypto.randomUUID(), p.id, p.tank_id, delta, date, new Date().toISOString()]);
+        }
+        run('UPDATE parts SET delivered_qty=? WHERE id=?', [p.total, p.id]);
+      }
+      run("UPDATE parts SET phase='' WHERE phase='Delivered'"); // drop the removed phase
+      // normalize the stored status column to the two states (mapPart derives it anyway)
+      run("UPDATE parts SET status = CASE WHEN qty_total>0 AND COALESCE(delivered_qty,0) >= qty_total THEN 'Delivered' ELSE 'Not Delivered' END");
+      // options: part status → the two values; part phase → drop 'Delivered'
+      run("DELETE FROM options WHERE field='status'");
+      run("INSERT INTO options(field,value,sort) VALUES ('status','Not Delivered',0)");
+      run("INSERT INTO options(field,value,sort) VALUES ('status','Delivered',1)");
+      run("DELETE FROM options WHERE field='phase' AND value='Delivered'");
+    }
+    run("INSERT INTO meta(k,v) VALUES ('delivery_status_v1', ?)", [new Date().toISOString()]);
+  }
 }
 
 // flush the in-memory DB to disk (called after every write). Atomic: write a
