@@ -7,7 +7,7 @@ A short way-of-thinking for running the business in the app without ever losing 
 
 - **Tank Types** — reusable templates: the parts checklist + each part's PDF/photo. Build once per product (e.g. "32 MVA Ruwais").
 - **Tanks** — real orders. Creating a tank **clones** the type's checklist into its own tracking rows.
-- **Parts** — the live tracking (phase, status, quantities, rework, assignee) per tank, **isolated** from the template.
+- **Parts** — the live tracking (phase, delivered/total quantity, Delivered / Not Delivered, assignee) per tank, **isolated** from the template.
 - **Follow-up** — daily work + weekly delivered quantities. **Reports** — the numbers. **Settings** — edit dropdown values + backups.
 
 ## 🛡 Golden rules — never lose data
@@ -20,8 +20,8 @@ A short way-of-thinking for running the business in the app without ever losing 
 ## Daily way of working (rule of thumb)
 
 1. **Morning:** Follow-up → pick the tank → today's date. Use the **phase filter** to work one stage at a time (e.g. everything in *Welding*).
-2. For each part: set **Phase** and **Status**, add a short **Note**, and when units actually ship enter **Deliver qty** → **Save day**.
-3. **Status flow:** Not Started → In Progress → (Rework if a defect) → Done. Mark **Delivered** only when it leaves to the customer.
+2. For each part: set the **Phase**, add a short **Note**, and when units actually ship enter **Deliver qty** (the day's total) → **Save day**.
+3. **Status is automatic:** a part becomes **Delivered** when its delivered quantity reaches the total. Toggling a part to **Delivered** fills the quantity; toggling **Not Delivered** resets it to 0. The phase is only shown while a part is not delivered.
 4. **Weekly:** Follow-up → Weekly rollup shows quantity delivered per week; **⤓ CSV** exports `No, item code, delivered qty`.
 
 ## Scenario playbook
@@ -30,9 +30,8 @@ A short way-of-thinking for running the business in the app without ever losing 
 |---|---|
 | **New product** | Tank Types → *New from spreadsheet* (or Blank + Add parts) → *Upload files* (PDFs/images named by item code) → open a part's 📎 → **Crop & save** the 3D view as its photo. |
 | **New order** | New Tank → pick the type → the checklist clones automatically. |
-| **A part fails QC** | Status = **Rework**, bump **Rework count**, choose a reason → shows in Reports → Rework. |
 | **Partial delivery** | Ship some now via **Deliver qty**; the remaining units keep moving through phases. Weekly rollup sums what was delivered. |
-| **Fix a phase/status name** | Settings → Rename — updates every part using it. **Don't rename Done/Delivered** (reserved by the completion math). |
+| **Fix a phase name** | Settings → Rename — updates every part using it. |
 | **Edit one tank only** | Change a part's code/name/qty in the Parts table — affects **only that tank**, never the template. |
 | **Customer parts list** | Tank Types → open the type → **📊 Export Excel** (cropped photos embedded, same layout as your sheet). |
 | **"Who changed what?"** | Reports → **Recent activity** — every change, delivery, file and rename is logged (with a filter box). |
